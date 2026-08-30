@@ -1,0 +1,12 @@
+# build output
+/ninelives
+/dist/
+
+# generated LaunchAgent
+/io.local.ninelives.plist.out
+
+# local tooling
+.claude/
+
+# macOS
+.DS_Store
