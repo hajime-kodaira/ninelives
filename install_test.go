@@ -82,7 +82,13 @@ func TestEphemeral(t *testing.T) {
 	if !ephemeral(filepath.Join(os.TempDir(), "go-build123", "b001", "exe", "ninelives")) {
 		t.Error("a go run build directory should count as ephemeral")
 	}
-	for _, p := range []string{"/tmp/ninelives", "/private/tmp/ninelives", "/var/tmp/ninelives"} {
+	// os.Executable resolves symlinks, so the /private forms are what actually
+	// reach ephemeral() on macOS — the literal ones alone are not enough.
+	tmp := filepath.Join(os.TempDir(), "ninelives")
+	if r, err := filepath.EvalSymlinks(os.TempDir()); err == nil {
+		tmp = filepath.Join(r, "ninelives")
+	}
+	for _, p := range []string{"/tmp/ninelives", "/private/tmp/ninelives", "/var/tmp/ninelives", "/private/var/tmp/ninelives", tmp} {
 		if !ephemeral(p) {
 			t.Errorf("a release downloaded to %s should count as ephemeral", p)
 		}
@@ -102,5 +108,33 @@ func TestValidateBar(t *testing.T) {
 	}
 	if err := validateBar("nope"); err == nil || !strings.Contains(err.Error(), "want 5h, 7d or min") {
 		t.Errorf("bad -bar gave %v", err)
+	}
+}
+
+// -dry-run must print the path install would really use, which is not the
+// running binary when that binary sits somewhere temporary.
+func TestTargetBin(t *testing.T) {
+	self, err := selfPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path, copyNeeded, err := targetBin("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ephemeral(self) {
+		if path != defaultBin() || !copyNeeded {
+			t.Errorf("from a temporary build: got %s copy=%v, want %s copy=true", path, copyNeeded, defaultBin())
+		}
+	} else if path != self || copyNeeded {
+		t.Errorf("from a durable path: got %s copy=%v, want %s copy=false", path, copyNeeded, self)
+	}
+
+	if path, copyNeeded, _ := targetBin("/somewhere/else/ninelives"); path != "/somewhere/else/ninelives" || !copyNeeded {
+		t.Errorf("-bin: got %s copy=%v", path, copyNeeded)
+	}
+	if path, copyNeeded, _ := targetBin(self); path != self || copyNeeded {
+		t.Errorf("-bin pointing at itself should not copy: got %s copy=%v", path, copyNeeded)
 	}
 }

@@ -22,12 +22,35 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 )
 
 // version is stamped by the release build with -ldflags "-X main.version=...".
+// A plain `go install module@vX` leaves it alone, so fall back to the module
+// version the toolchain records instead of reporting "dev".
 var version = "dev"
+
+func versionString() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return version
+	}
+	return resolveVersion(version, info.Main.Version)
+}
+
+// resolveVersion prefers the stamped value, then the module version. "(devel)"
+// is what the toolchain records for a local build, which tells us nothing.
+func resolveVersion(stamped, module string) string {
+	if stamped != "dev" && stamped != "" {
+		return stamped
+	}
+	if module != "" && module != "(devel)" {
+		return module
+	}
+	return "dev"
+}
 
 type options struct {
 	out      string
@@ -82,7 +105,7 @@ func main() {
 		usageText(os.Stdout)
 		return
 	case "version":
-		fmt.Println("ninelives " + version)
+		fmt.Println("ninelives " + versionString())
 		return
 	case "run", "install", "uninstall", "status":
 	default:

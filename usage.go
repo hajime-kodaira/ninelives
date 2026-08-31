@@ -140,7 +140,7 @@ func fetchUsage(token string, timeout time.Duration) ([]byte, http.Header, error
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", anthropicBeta)
 	req.Header.Set("anthropic-version", anthropicVers)
-	req.Header.Set("User-Agent", "ninelives/"+version)
+	req.Header.Set("User-Agent", "ninelives/"+versionString())
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := (&http.Client{Timeout: timeout}).Do(req)

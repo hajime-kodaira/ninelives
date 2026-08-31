@@ -71,21 +71,20 @@ func installAgent(o options, extraArgs []string) error {
 		fmt.Println(note)
 	}
 
+	bin, copyNeeded, err := targetBin(o.bin)
+	if err != nil {
+		return err
+	}
 	if o.dryRun {
-		bin := o.bin
-		if bin == "" {
-			if self, err := os.Executable(); err == nil {
-				bin = self
-			}
-		}
 		args := append([]string{bin, "-out", o.out}, extraArgs...)
 		_, err := os.Stdout.Write(plistXML(args, logPath(), o.interval))
 		return err
 	}
-
-	bin, err := resolveBin(o.bin)
-	if err != nil {
-		return err
+	if copyNeeded {
+		fmt.Printf("==> installing %s\n", bin)
+		if err := copySelf(bin); err != nil {
+			return err
+		}
 	}
 
 	// Fetch once before registering anything, so a missing token fails here
@@ -124,10 +123,29 @@ Errors from the scheduled runs land in %s
 	return nil
 }
 
-// resolveBin decides which binary path the agent should launch. A binary built
-// by `go run` lives in a temp directory that disappears, so in that case (or
-// when -bin is given) copy it somewhere stable first.
-func resolveBin(want string) (string, error) {
+// targetBin decides which binary path the agent should launch, and whether we
+// have to put a copy there first. A binary built by `go run`, or one just
+// downloaded into a temp directory, will not survive, so it cannot be the thing
+// launchd points at.
+func targetBin(want string) (path string, copyNeeded bool, err error) {
+	self, err := selfPath()
+	if err != nil {
+		return "", false, err
+	}
+	if want == "" {
+		if !ephemeral(self) {
+			return self, false, nil
+		}
+		return defaultBin(), true, nil
+	}
+	want, err = filepath.Abs(want)
+	if err != nil {
+		return "", false, err
+	}
+	return want, want != self, nil
+}
+
+func selfPath() (string, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return "", err
@@ -135,25 +153,15 @@ func resolveBin(want string) (string, error) {
 	if resolved, err := filepath.EvalSymlinks(self); err == nil {
 		self = resolved
 	}
-	if want == "" {
-		if !ephemeral(self) {
-			return self, nil
-		}
-		want = defaultBin()
-		fmt.Printf("==> running from a temporary build; copying to %s\n", want)
-	}
-	want, err = filepath.Abs(want)
+	return self, nil
+}
+
+func copySelf(dst string) error {
+	self, err := selfPath()
 	if err != nil {
-		return "", err
+		return err
 	}
-	if want == self {
-		return want, nil
-	}
-	fmt.Printf("==> installing %s\n", want)
-	if err := copyExecutable(self, want); err != nil {
-		return "", err
-	}
-	return want, nil
+	return copyExecutable(self, dst)
 }
 
 // ephemeral reports whether a binary sits somewhere that will not survive:
@@ -162,12 +170,34 @@ func ephemeral(path string) bool {
 	if strings.Contains(path, "/go-build") {
 		return true
 	}
-	for _, dir := range []string{os.TempDir(), "/tmp/", "/private/tmp/", "/var/tmp/"} {
-		if dir != "" && strings.HasPrefix(path, strings.TrimSuffix(dir, "/")+"/") {
+	for _, dir := range []string{os.TempDir(), "/tmp", "/private/tmp", "/var/tmp", "/var/folders"} {
+		if under(path, dir) {
 			return true
 		}
 	}
 	return false
+}
+
+// under compares against both the literal and the symlink-resolved directory.
+// On macOS /tmp and /var are symlinks into /private, and os.Executable is
+// resolved, so a literal prefix test alone silently misses every temp path.
+func under(path, dir string) bool {
+	if dir == "" {
+		return false
+	}
+	for _, d := range []string{dir, resolve(dir)} {
+		if d != "" && strings.HasPrefix(path, strings.TrimSuffix(d, "/")+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func resolve(dir string) string {
+	if r, err := filepath.EvalSymlinks(dir); err == nil {
+		return r
+	}
+	return ""
 }
 
 func copyExecutable(src, dst string) error {

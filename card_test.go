@@ -110,3 +110,16 @@ func TestRowsFallback(t *testing.T) {
 		t.Errorf("five_hour utilization = %v, want 43", rows[0].used)
 	}
 }
+
+func TestResolveVersion(t *testing.T) {
+	for _, c := range []struct{ stamped, module, want string }{
+		{"v1.2.3", "v9.9.9", "v1.2.3"}, // a release build wins
+		{"dev", "v1.0.0", "v1.0.0"},    // go install module@v1.0.0
+		{"dev", "(devel)", "dev"},      // local go build
+		{"dev", "", "dev"},
+	} {
+		if got := resolveVersion(c.stamped, c.module); got != c.want {
+			t.Errorf("resolveVersion(%q, %q) = %q, want %q", c.stamped, c.module, got, c.want)
+		}
+	}
+}
