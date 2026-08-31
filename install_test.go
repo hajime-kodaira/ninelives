@@ -57,6 +57,27 @@ func TestAgentArgsOnlyCarriesExplicitFlags(t *testing.T) {
 	}
 }
 
+// The floor is not a style preference: 5 requests per 5 minutes is measured, so
+// below 60s every run past the fifth is throttled.
+func TestValidateInterval(t *testing.T) {
+	for _, n := range []int{59, 30, 1, 0, -5} {
+		if err := validateInterval(n); err == nil {
+			t.Errorf("-interval %d was accepted", n)
+		}
+	}
+	for _, n := range []int{60, 120, 300, 3600} {
+		if err := validateInterval(n); err != nil {
+			t.Errorf("-interval %d rejected: %v", n, err)
+		}
+	}
+	if intervalNote(300) != "" || intervalNote(defaultInterval) != "" {
+		t.Error("no note expected at or above the default interval")
+	}
+	if !strings.Contains(intervalNote(60), "5 of the 5 requests") {
+		t.Errorf("note at the floor = %q", intervalNote(60))
+	}
+}
+
 func TestEphemeral(t *testing.T) {
 	if !ephemeral(filepath.Join(os.TempDir(), "go-build123", "b001", "exe", "ninelives")) {
 		t.Error("a go run build directory should count as ephemeral")

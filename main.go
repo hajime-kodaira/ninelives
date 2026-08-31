@@ -63,7 +63,7 @@ func (o *options) bind(fs *flag.FlagSet, sub string) {
 		fs.BoolVar(&o.stdout, "stdout", false, "print the card to stdout instead of writing -out")
 	case "install":
 		fs.StringVar(&o.bin, "bin", "", "install the binary here first (default: launch it where it already is)")
-		fs.IntVar(&o.interval, "interval", minInterval, "seconds between refreshes; 300 is the floor")
+		fs.IntVar(&o.interval, "interval", defaultInterval, "seconds between refreshes; 60 is the floor")
 		fs.BoolVar(&o.dryRun, "dry-run", false, "print the launchd plist that would be installed and stop")
 	case "uninstall":
 		fs.BoolVar(&o.keep, "keep-metrics", false, "leave the metrics file in place")
@@ -153,7 +153,10 @@ func runOnce(o options) error {
 		if err != nil {
 			return err
 		}
-		body, err := fetchUsage(token, o.timeout)
+		body, hdr, err := fetchUsage(token, o.timeout)
+		for _, h := range responseHeaders(hdr) {
+			fmt.Fprintln(os.Stderr, h)
+		}
 		if err != nil {
 			return fmt.Errorf("%w (token from %s)", err, src)
 		}
@@ -176,6 +179,13 @@ func runOnce(o options) error {
 // showing the last good numbers with a stale "N minutes ago" instead of
 // silently zeroing the bars.
 func writeMetrics(o options) error {
+	// A recorded 429 means the server already told us when to come back. Skip
+	// the request rather than spending one of the window's few slots, and exit
+	// successfully so the log does not fill with the same complaint.
+	if d, ok := loadState(o.out).waiting(time.Now()); ok {
+		fmt.Fprintf(os.Stderr, "ninelives: rate limited, skipping for another %s\n", d)
+		return nil
+	}
 	enc, err := encodeCard(o)
 	if err != nil {
 		return err
@@ -188,10 +198,18 @@ func encodeCard(o options) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	body, err := fetchUsage(token, o.timeout)
+	body, _, err := fetchUsage(token, o.timeout)
 	if err != nil {
+		var rl *rateLimitError
+		if errors.As(err, &rl) {
+			st := loadState(o.out)
+			st.Strikes++
+			st.BackoffUntil = time.Now().Add(rl.RetryAfter)
+			saveState(o.out, st)
+		}
 		return nil, fmt.Errorf("%w (token from %s)", err, src)
 	}
+	clearState(o.out)
 	var u usage
 	if err := json.Unmarshal(body, &u); err != nil {
 		return nil, fmt.Errorf("parsing usage response: %w", err)
@@ -231,7 +249,7 @@ run only:
 
 install only:
   -bin PATH        copy the binary here and launch that copy
-  -interval N      seconds between refreshes (default 300, also the floor)
+  -interval N      seconds between refreshes (default 120, floor 60)
   -dry-run         print the plist that would be installed and stop
 
 uninstall only:

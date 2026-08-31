@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -132,10 +133,10 @@ func modelName(l limit) string {
 
 // --- fetching ----------------------------------------------------------
 
-func fetchUsage(token string, timeout time.Duration) ([]byte, error) {
+func fetchUsage(token string, timeout time.Duration) ([]byte, http.Header, error) {
 	req, err := http.NewRequest(http.MethodGet, usageURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", anthropicBeta)
@@ -145,23 +146,56 @@ func fetchUsage(token string, timeout time.Duration) ([]byte, error) {
 
 	resp, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, err
+		return nil, resp.Header, err
 	}
 
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
-		return nil, errors.New("401 from the usage endpoint: the OAuth token expired; start `claude` once to let it refresh")
+		return nil, resp.Header, errors.New("401 from the usage endpoint: the OAuth token expired; start `claude` once to let it refresh")
 	case resp.StatusCode == http.StatusTooManyRequests:
-		return nil, errors.New("429 from the usage endpoint: polling too often; keep the interval at 5 minutes or more")
+		return nil, resp.Header, &rateLimitError{RetryAfter: retryAfter(resp.Header)}
 	case resp.StatusCode != http.StatusOK:
-		return nil, fmt.Errorf("usage endpoint returned %s: %s", resp.Status, snippet(body))
+		return nil, resp.Header, fmt.Errorf("usage endpoint returned %s: %s", resp.Status, snippet(body))
 	}
-	return body, nil
+	return body, resp.Header, nil
+}
+
+// rateLimitError is a 429. The endpoint sends no rate-limit headers on a
+// success, but a 429 does carry Retry-After, which is exactly when the window
+// resets — so it is worth threading through rather than flattening to text.
+type rateLimitError struct{ RetryAfter time.Duration }
+
+func (e *rateLimitError) Error() string {
+	return fmt.Sprintf("429 from the usage endpoint: the window resets in %s", e.RetryAfter)
+}
+
+// defaultRetryAfter is used when a 429 arrives without the header. The observed
+// window is 5 minutes, so waiting that long is the safe assumption.
+const defaultRetryAfter = 5 * time.Minute
+
+func retryAfter(h http.Header) time.Duration {
+	if h != nil {
+		if secs, err := strconv.Atoi(strings.TrimSpace(h.Get("Retry-After"))); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return defaultRetryAfter
+}
+
+// responseHeaders renders the response headers for -raw. Rate-limit headers in
+// particular are the only way to tell how often this endpoint can be polled.
+func responseHeaders(h http.Header) []string {
+	var out []string
+	for name, vals := range h {
+		out = append(out, name+": "+strings.Join(vals, ", "))
+	}
+	sort.Strings(out)
+	return out
 }
 
 // --- credentials -------------------------------------------------------

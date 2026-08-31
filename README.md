@@ -52,6 +52,8 @@ go build -o ~/bin/ninelives .
 2. `~/Library/LaunchAgents/io.local.ninelives.plist` を書く
 3. `launchctl bootstrap` で読み込む（再実行時は先に `bootout` するので何度でも上書きできます）
 
+更新間隔の既定は **120 秒**です。`-interval` で変更できますが、下限は 60 秒です（理由は[レート制限](#レート制限)を参照）。
+
 登録前に中身を見たいときは `ninelives install -dry-run` で plist だけ標準出力に出ます。
 
 最後に RunCat Neo 側で登録します。
@@ -66,7 +68,8 @@ agent    loaded
 plist    /Users/you/Library/LaunchAgents/io.local.ninelives.plist
 log      /Users/you/Library/Logs/ninelives.log
 metrics  /Users/you/.config/runcat-neo-metrics/claude.json
-         updated 2m14s ago · bar 57%
+backoff  none
+         updated 1m02s ago · bar 57%
          5h         57% left · 1h36m
          7d         93% left · 3d18h
          7d Fable   89% left · 3d18h
@@ -92,10 +95,10 @@ ninelives version
 | `-title` | `Claude` | カードのタイトル |
 | `-symbol` | `staroflife` | カードの SF Symbol 名 |
 | `-timeout` | `15s` | HTTP タイムアウト |
-| `-raw` | false | API の生レスポンスを表示して終了（`run` のみ） |
+| `-raw` | false | API の生レスポンスを表示して終了。ヘッダは標準エラーに出ます（`run` のみ） |
 | `-stdout` | false | ファイルに書かず標準出力へ（`run` のみ） |
 | `-bin` | | バイナリをここにコピーしてそれを登録する（`install` のみ） |
-| `-interval` | `300` | 更新間隔（秒）。300 が下限（`install` のみ） |
+| `-interval` | `120` | 更新間隔（秒）。下限 60（`install` のみ） |
 | `-dry-run` | false | 登録せず plist を表示して終了（`install` のみ） |
 | `-keep-metrics` | false | metrics ファイルは消さない（`uninstall` のみ） |
 
@@ -123,13 +126,19 @@ ninelives version
 | `main.go` | サブコマンドの振り分けとフラグ |
 | `usage.go` | 認証トークンの取得と usage エンドポイント |
 | `card.go` | RunCat Neo のカード生成と整形 |
+| `state.go` | 429 を食らった時刻の記録（実行をまたぐバックオフ） |
 | `install.go` | launchd エージェントの登録・解除・状態表示 |
 
 ## 注意点
 
 **エンドポイントは非公式です。** 公式ドキュメントに記載がなく、ベータヘッダが `oauth-2025-04-20` と日付付きになっている＝一度は変わっている証拠なので、将来予告なく壊れる可能性があります。壊れたら `-raw` でレスポンスを見てください。レスポンスの形が変わっても動くよう、新しい `limits` 配列と古い `five_hour` / `seven_day` の両方を読めるようにしてあります。
 
-**5分間隔より短くしないでください。** このエンドポイントは 429 がかなり厳しく、頻繁に叩くと恒常的にレート制限される報告があります。`-interval` は 300 未満を受け付けません。
+<a id="レート制限"></a>
+**レート制限は 5分あたり 5リクエストです。** 実測しました。5本目までは通り、6本目で 429 と `Retry-After: 300` が返ります。成功応答には `anthropic-ratelimit-*` の類が一切付かないので、429 の `Retry-After` だけが手がかりです。
+
+つまり **60秒間隔がちょうど予算を使い切る**計算になります。既定を 120 秒にしてあるのは、Claude Code の `/usage` も同じ枠を消費するため半分ほど空けておくためです。60 秒未満は `-interval` が受け付けません。
+
+**429 を受けたら次回以降の実行をスキップします。** launchd の `StartInterval` は固定で「待て」と伝えられないので、`Retry-After` を `~/.config/runcat-neo-metrics/.ninelives-state.json` に記録し、その時刻まではリクエストを投げずに即終了します（終了コード 0）。枠が空けば自動的に再開し、記録は消えます。現在の状態は `ninelives status` の `backoff` 行で分かります。
 
 **失敗しても JSON を上書きしません。** RunCat 側は最後に成功した値を保持したまま「◯分前」だけが古くなるので、止まっていることが見て分かります。エラーは `~/Library/Logs/ninelives.log` に残ります。
 

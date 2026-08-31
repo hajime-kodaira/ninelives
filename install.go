@@ -20,9 +20,15 @@ import (
 
 const (
 	agentLabel = "io.local.ninelives"
-	// The usage endpoint rate-limits aggressively; anything faster than this
-	// risks being throttled for good.
-	minInterval = 300
+
+	// Measured against the live endpoint: 5 requests succeed inside a 5 minute
+	// window and the 6th returns 429 with Retry-After: 300. So one request per
+	// 60s is exactly the whole budget, and anything faster is guaranteed to be
+	// throttled. Clock drift can still push a 6th request into a window at the
+	// floor, which is why 120s — roughly half the budget — is the default: it
+	// leaves room for Claude Code's own /usage, which shares the same limit.
+	minInterval     = 60
+	defaultInterval = 120
 )
 
 func plistPath() string {
@@ -37,14 +43,32 @@ func defaultBin() string {
 	return filepath.Join(homeDir(), "bin", "ninelives")
 }
 
+func validateInterval(n int) error {
+	if n < minInterval {
+		return fmt.Errorf("-interval %d is below the %ds floor: the endpoint allows 5 requests per 5 minutes, so anything faster is throttled outright", n, minInterval)
+	}
+	return nil
+}
+
+// intervalNote warns when the agent would eat most of the shared budget.
+func intervalNote(n int) string {
+	if n >= defaultInterval {
+		return ""
+	}
+	return fmt.Sprintf("note: at %ds this uses %d of the 5 requests each 5 minute window, leaving little for Claude Code's own /usage", n, 300/n)
+}
+
 // --- install -----------------------------------------------------------
 
 func installAgent(o options, extraArgs []string) error {
 	if runtime.GOOS != "darwin" {
 		return errors.New("install manages a launchd agent, which only exists on macOS")
 	}
-	if o.interval < minInterval {
-		return fmt.Errorf("-interval %d is below the %d second floor; the usage endpoint rate-limits hard", o.interval, minInterval)
+	if err := validateInterval(o.interval); err != nil {
+		return err
+	}
+	if note := intervalNote(o.interval); note != "" {
+		fmt.Println(note)
 	}
 
 	if o.dryRun {
@@ -203,6 +227,7 @@ func showStatus(o options) error {
 	fmt.Printf("plist    %s\n", exists(plistPath()))
 	fmt.Printf("log      %s\n", exists(logPath()))
 	fmt.Printf("metrics  %s\n", o.out)
+	fmt.Printf("backoff  %s\n", loadState(o.out).describe(time.Now()))
 
 	data, err := os.ReadFile(o.out)
 	if err != nil {
