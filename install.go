@@ -170,7 +170,14 @@ func ephemeral(path string) bool {
 	if strings.Contains(path, "/go-build") {
 		return true
 	}
-	for _, dir := range []string{os.TempDir(), "/tmp", "/private/tmp", "/var/tmp", "/var/folders"} {
+	// The /private forms are listed explicitly rather than left to under()'s
+	// symlink resolution, which only finds them when running on macOS.
+	for _, dir := range []string{
+		os.TempDir(),
+		"/tmp", "/private/tmp",
+		"/var/tmp", "/private/var/tmp",
+		"/var/folders", "/private/var/folders",
+	} {
 		if under(path, dir) {
 			return true
 		}
