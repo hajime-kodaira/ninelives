@@ -42,10 +42,15 @@ ninelives install
 
 `~/go/bin` が PATH に無い場合は `$(go env GOPATH)/bin/ninelives install` としてください。
 
-リポジトリが Private の間は Go のモジュールプロキシから引けないので、一度だけ次の設定が要ります（Public にすれば不要）。
+リポジトリが Private の間は Go のモジュールプロキシを経由できないので、一度だけこれが要ります（Public にすれば不要）。
 
 ```bash
 go env -w GOPRIVATE=github.com/hajime-kodaira/*
+```
+
+これで git が GitHub に認証できていれば通ります。`gh auth setup-git` 済みなら追加設定は不要です。HTTPS で認証できない環境なら、SSH に寄せてください。
+
+```bash
 git config --global url."git@github.com:".insteadOf "https://github.com/"
 ```
 
