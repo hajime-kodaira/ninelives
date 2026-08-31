@@ -104,6 +104,10 @@ func installAgent(o options, extraArgs []string) error {
 		return err
 	}
 
+	st := loadState(o.out)
+	st.AgentVersion = versionString()
+	saveState(o.out, st)
+
 	fmt.Println("==> loading the launchd agent")
 	// bootout first so a re-run replaces the previous registration.
 	_ = launchctl("bootout", domain()+"/"+agentLabel)
@@ -272,8 +276,11 @@ func uninstallAgent(o options, keepData bool) error {
 // --- status ------------------------------------------------------------
 
 func showStatus(o options) error {
+	st := loadState(o.out)
+
 	fmt.Printf("agent    %s\n", agentState())
 	fmt.Printf("plist    %s\n", exists(plistPath()))
+	reportBinaries(st)
 	fmt.Printf("log      %s\n", exists(logPath()))
 	fmt.Printf("metrics  %s\n", o.out)
 	fmt.Printf("backoff  %s\n", loadState(o.out).describe(time.Now()))
@@ -297,6 +304,52 @@ func showStatus(o options) error {
 		fmt.Printf("         %-10s %s\n", m.Title, m.FormattedValue)
 	}
 	return nil
+}
+
+// reportBinaries shows which binary the agent actually launches and how its
+// version compares to the one being run right now. Updating is just replacing
+// the binary, so these two are expected to match; a mismatch means either the
+// update did not land where the agent looks, or the plist predates it.
+func reportBinaries(st state) {
+	mine := versionString()
+	fmt.Printf("this     %s\n", mine)
+
+	bin, err := registeredBin()
+	if err != nil {
+		fmt.Println("runs     (no agent installed)")
+		return
+	}
+	theirs := binVersion(bin)
+	fmt.Printf("runs     %s (%s)\n", bin, theirs)
+
+	if theirs != mine && theirs != "unknown" {
+		fmt.Printf("         note: the agent runs a different build than this one\n")
+	}
+	if st.AgentVersion != "" && st.AgentVersion != mine {
+		fmt.Printf("         note: the plist was written by %s; re-run `ninelives install` if flags changed\n", st.AgentVersion)
+	}
+}
+
+// registeredBin reads the binary path out of the installed plist rather than
+// trusting a recorded copy, so a hand-edited plist still reports the truth.
+func registeredBin() (string, error) {
+	out, err := exec.Command("plutil", "-extract", "ProgramArguments.0", "raw", "-o", "-", plistPath()).Output()
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimSpace(string(out))
+	if path == "" {
+		return "", errors.New("plist has no ProgramArguments")
+	}
+	return path, nil
+}
+
+func binVersion(path string) string {
+	out, err := exec.Command(path, "version").Output()
+	if err != nil {
+		return "unknown"
+	}
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(out)), "ninelives "))
 }
 
 func agentState() string {

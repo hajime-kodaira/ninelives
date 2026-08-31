@@ -21,6 +21,10 @@ type state struct {
 	// Seen records the allowance windows the API has reported, so a newly
 	// appearing one can be announced once instead of every single run.
 	Seen []string `json:"seen,omitempty"`
+	// AgentVersion is the version that wrote the current plist. Replacing the
+	// binary is enough to update, but a plist written by an older version can
+	// be missing keys a newer one expects, and nothing else would say so.
+	AgentVersion string `json:"agentVersion,omitempty"`
 }
 
 func (s *state) clearBackoff() {
