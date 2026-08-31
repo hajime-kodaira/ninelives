@@ -42,23 +42,11 @@ ninelives install
 
 `~/go/bin` が PATH に無い場合は `$(go env GOPATH)/bin/ninelives install` としてください。
 
-リポジトリが Private の間は Go のモジュールプロキシを経由できないので、`GOPRIVATE` だけ指定してください。その場限りで済ませるならこれで十分です。
-
-```bash
-GOPRIVATE='github.com/hajime-kodaira/*' go install github.com/hajime-kodaira/ninelives@latest
-```
-
-毎回書きたくなければ `go env -w GOPRIVATE=github.com/hajime-kodaira/*` で永続化できます。git が GitHub に認証できていれば追加設定は不要です（`gh auth setup-git` 済みならそのまま通ります）。HTTPS で認証できない環境なら SSH に寄せてください。
-
-```bash
-git config --global url."git@github.com:".insteadOf "https://github.com/"
-```
-
 ### 2. リリースバイナリ（Go すら不要）
 
 ```bash
 mkdir -p ~/bin
-gh release download -R hajime-kodaira/ninelives -p ninelives_darwin_arm64 -O ~/bin/ninelives
+curl -L -o ~/bin/ninelives https://github.com/hajime-kodaira/ninelives/releases/latest/download/ninelives_darwin_arm64
 chmod +x ~/bin/ninelives
 ~/bin/ninelives install
 ```
@@ -68,7 +56,7 @@ Intel Mac なら `ninelives_darwin_amd64` です。チェックサムは同じ�
 ### 3. ソースから
 
 ```bash
-git clone git@github.com:hajime-kodaira/ninelives.git
+git clone https://github.com/hajime-kodaira/ninelives.git
 cd ninelives
 go run . install
 ```
