@@ -40,7 +40,26 @@ go install github.com/hajime-kodaira/ninelives@latest
 ninelives install
 ```
 
-`~/go/bin` が PATH に無い場合は `$(go env GOPATH)/bin/ninelives install` としてください。
+**`ninelives: command not found` になったら、`~/go/bin` が PATH に無いだけです。** エージェント自体は絶対パスで登録されるので影響を受けません。困るのは後から `ninelives status` と打てないことだけです。
+
+```bash
+# 今どうなっているか
+BIN="$(go env GOBIN)"; [ -n "$BIN" ] || BIN="$(go env GOPATH)/bin"
+ls -l "$BIN/ninelives"
+case ":$PATH:" in *":$BIN:"*) echo "PATH: ok";; *) echo "PATH: $BIN が通っていません";; esac
+```
+
+バイナリがあって PATH だけの問題なら、どちらかで解決します。
+
+```bash
+# A. PATH を通さずフルパスで叩く（これだけでインストールは完了します）
+"$BIN/ninelives" install
+
+# B. PATH を通す
+echo "export PATH=\"\$PATH:$BIN\"" >> ~/.zshrc && exec zsh
+```
+
+そもそもバイナリが無い場合は `go install` 自体が失敗しています。Private リポジトリなので `GOPRIVATE` を付け忘れていないか確認してください。`install` 実行時にも PATH の警告を出すようにしてあります。
 
 ### 2. リリースバイナリ（Go すら不要）
 

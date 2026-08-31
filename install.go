@@ -115,6 +115,10 @@ func installAgent(o options, extraArgs []string) error {
 		return fmt.Errorf("launchctl bootstrap: %w", err)
 	}
 
+	if note := pathNote(bin); note != "" {
+		fmt.Print(note)
+	}
+
 	fmt.Printf(`
 Done. %s now refreshes every %d seconds.
 
@@ -170,6 +174,32 @@ func copySelf(dst string) error {
 
 // ephemeral reports whether a binary sits somewhere that will not survive:
 // a `go run` build directory, or a temp dir someone downloaded a release into.
+// pathNote warns when the installed binary sits outside PATH. The agent itself
+// is fine — the plist carries the absolute path — but typing `ninelives` later
+// will not resolve, which reads as a failed install.
+func pathNote(bin string) string {
+	dir := filepath.Dir(bin)
+	if onPath(dir) {
+		return ""
+	}
+	return fmt.Sprintf(`
+note: %s is not on your PATH, so typing `+"`ninelives`"+` will not work.
+      The agent is unaffected; it launches the absolute path above.
+      To fix it:  echo 'export PATH="$PATH:%s"' >> ~/.zshrc && exec zsh
+`, dir, dir)
+}
+
+// onPath reports whether dir is one of the PATH entries.
+func onPath(dir string) bool {
+	dir = filepath.Clean(dir)
+	for _, entry := range filepath.SplitList(os.Getenv("PATH")) {
+		if entry != "" && filepath.Clean(entry) == dir {
+			return true
+		}
+	}
+	return false
+}
+
 func ephemeral(path string) bool {
 	if strings.Contains(path, "/go-build") {
 		return true

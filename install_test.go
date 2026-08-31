@@ -78,6 +78,46 @@ func TestValidateInterval(t *testing.T) {
 	}
 }
 
+// Registering a binary that is not on PATH installs a working agent but leaves
+// the command untypable, which reads as a broken install.
+func TestOnPath(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin:/opt/homebrew/bin/:/Users/someone/go/bin")
+
+	for _, dir := range []string{"/usr/bin", "/opt/homebrew/bin", "/Users/someone/go/bin"} {
+		if !onPath(dir) {
+			t.Errorf("%s should be found on PATH", dir)
+		}
+	}
+	for _, dir := range []string{"/Users/someone/bin", "/usr", "/usr/bin/extra"} {
+		if onPath(dir) {
+			t.Errorf("%s should not be found on PATH", dir)
+		}
+	}
+
+	t.Setenv("PATH", "")
+	if onPath("/usr/bin") {
+		t.Error("an empty PATH should match nothing")
+	}
+}
+
+func TestPathNote(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin:/Users/someone/go/bin")
+
+	if note := pathNote("/Users/someone/go/bin/ninelives"); note != "" {
+		t.Errorf("a binary already on PATH should not be flagged: %q", note)
+	}
+	note := pathNote("/Users/someone/bin/ninelives")
+	for _, want := range []string{
+		"/Users/someone/bin is not on your PATH",
+		"The agent is unaffected",
+		`export PATH="$PATH:/Users/someone/bin"`,
+	} {
+		if !strings.Contains(note, want) {
+			t.Errorf("note missing %q:\n%s", want, note)
+		}
+	}
+}
+
 func TestEphemeral(t *testing.T) {
 	if !ephemeral(filepath.Join(os.TempDir(), "go-build123", "b001", "exe", "ninelives")) {
 		t.Error("a go run build directory should count as ephemeral")
