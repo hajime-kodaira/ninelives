@@ -2,8 +2,6 @@
 /ninelives
 /dist/
 
-# generated LaunchAgent
-/io.local.ninelives.plist.out
 
 # local tooling
 .claude/
