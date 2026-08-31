@@ -18,6 +18,31 @@ type state struct {
 	BackoffUntil time.Time `json:"backoffUntil,omitempty"`
 	// Strikes counts consecutive 429s, for status output only.
 	Strikes int `json:"strikes,omitempty"`
+	// Seen records the allowance windows the API has reported, so a newly
+	// appearing one can be announced once instead of every single run.
+	Seen []string `json:"seen,omitempty"`
+}
+
+func (s *state) clearBackoff() {
+	s.BackoffUntil = time.Time{}
+	s.Strikes = 0
+}
+
+// noteWindows records the current window names and returns the ones that were
+// not there before.
+func (s *state) noteWindows(names []string) []string {
+	was := make(map[string]bool, len(s.Seen))
+	for _, n := range s.Seen {
+		was[n] = true
+	}
+	var added []string
+	for _, n := range names {
+		if !was[n] {
+			added = append(added, n)
+		}
+	}
+	s.Seen = names
+	return added
 }
 
 // statePath keeps the state beside the metrics file. The leading dot keeps it

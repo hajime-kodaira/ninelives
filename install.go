@@ -257,10 +257,12 @@ func uninstallAgent(o options, keepData bool) error {
 		}
 	}
 	if !keepData {
-		if err := os.Remove(o.out); err == nil {
-			fmt.Printf("==> removed %s\n", o.out)
-		} else if !os.IsNotExist(err) {
-			return err
+		for _, p := range []string{o.out, statePath(o.out)} {
+			if err := os.Remove(p); err == nil {
+				fmt.Printf("==> removed %s\n", p)
+			} else if !os.IsNotExist(err) {
+				return err
+			}
 		}
 	}
 	fmt.Println("\nThe binary itself is left in place. Remove the card from RunCat Neo's settings by hand.")

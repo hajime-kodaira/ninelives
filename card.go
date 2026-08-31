@@ -29,23 +29,35 @@ type card struct {
 	LastUpdatedDate string   `json:"lastUpdatedDate"`
 }
 
-func buildCard(u usage, title, symbol, bar string, lives bool, now time.Time) card {
+func buildCard(u usage, o options, now time.Time) card {
 	c := card{
-		Title:           title,
-		Symbol:          symbol,
+		Title:           o.title,
+		Symbol:          o.symbol,
 		LastUpdatedDate: now.UTC().Format(time.RFC3339),
 	}
 	rows := u.rows()
+	if o.extra {
+		rows = append(rows, u.unknownWindows()...)
+	}
 	for _, r := range rows {
 		left := clamp(100-r.used, 0, 100)
 		norm := left / 100
 		c.Metrics = append(c.Metrics, metric{
 			Title:           r.label,
-			FormattedValue:  shortValue(left, lives) + " left" + until(now, r.resets),
+			FormattedValue:  shortValue(left, o.lives) + " left" + until(now, r.resets),
 			NormalizedValue: &norm,
 		})
 	}
-	c.MetricsBarValue = shortValue(barValue(rows, bar), lives)
+	if o.credits && u.ExtraUsage != nil && u.ExtraUsage.IsEnabled {
+		// Money, not a percentage: no normalizedValue means no bar.
+		c.Metrics = append(c.Metrics, metric{
+			Title:          "Credits",
+			FormattedValue: u.ExtraUsage.spent() + " used",
+		})
+	}
+	// The menu bar only ever reflects the plan windows; an unknown allowance
+	// sitting at 0% must not make the bar look full.
+	c.MetricsBarValue = shortValue(barValue(u.rows(), o.bar), o.lives)
 	return c
 }
 

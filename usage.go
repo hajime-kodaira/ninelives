@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -50,6 +52,101 @@ type usage struct {
 	SevenDay     *window `json:"seven_day"`
 	SevenDayOpus *window `json:"seven_day_opus"`
 	Limits       []limit `json:"limits"`
+
+	// Decoded separately from raw, never as part of the main struct: it is a
+	// cosmetic extra, and a surprise in its shape must not cost us the card.
+	// used_credits arrives as 735.0, which an int field would reject outright.
+	ExtraUsage *extraUsage `json:"-"`
+
+	// raw keeps every top-level key so unrecognised allowances can still be
+	// found. The account carries a row of codenamed nulls — omelette_promotional,
+	// amber_ladder, tangelo and friends — which is where a temporary grant would
+	// plausibly show up, and nimbus_quill is already non-null. Rather than guess
+	// at each name, anything window-shaped that is not accounted for is reported.
+	raw map[string]json.RawMessage
+}
+
+// knownKeys are the top-level fields the card already understands. Everything
+// else is a candidate allowance.
+var knownKeys = map[string]bool{
+	"five_hour": true, "seven_day": true, "seven_day_opus": true,
+	"limits": true, "extra_usage": true, "spend": true,
+	"member_dashboard_available": true,
+}
+
+func (u *usage) UnmarshalJSON(b []byte) error {
+	type plain usage // avoid recursing into this method
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*u = usage(p)
+	if err := json.Unmarshal(b, &u.raw); err != nil {
+		return err
+	}
+	if body, ok := u.raw["extra_usage"]; ok {
+		var e extraUsage
+		if err := json.Unmarshal(body, &e); err == nil {
+			u.ExtraUsage = &e
+		}
+	}
+	return nil
+}
+
+// unknownWindows returns the window-shaped fields the card does not show. A new
+// allowance appearing under a name nobody has seen yet lands here instead of
+// being silently dropped.
+func (u usage) unknownWindows() []row {
+	names := make([]string, 0, len(u.raw))
+	for name := range u.raw {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var out []row
+	for _, name := range names {
+		if knownKeys[name] {
+			continue
+		}
+		body := bytes.TrimSpace(u.raw[name])
+		if len(body) == 0 || body[0] != '{' { // null, or not an object
+			continue
+		}
+		var w window
+		if err := json.Unmarshal(body, &w); err != nil {
+			continue
+		}
+		if !bytes.Contains(body, []byte(`"utilization"`)) {
+			continue // some other kind of object, not an allowance
+		}
+		out = append(out, row{label: name, used: w.Utilization, resets: w.ResetsAt.Time})
+	}
+	return out
+}
+
+// extraUsage is the pay-as-you-go spend that covers you past the plan limits.
+// It is money rather than a percentage, so it never gets a bar.
+type extraUsage struct {
+	IsEnabled         bool    `json:"is_enabled"`
+	Currency          string  `json:"currency"`
+	DecimalPlaces     float64 `json:"decimal_places"`
+	UsedCredits       float64 `json:"used_credits"`
+	SpendLimitReached bool    `json:"spend_limit_reached"`
+}
+
+// spent renders used_credits as an amount, e.g. 735 with 2 decimal places and
+// USD becomes "$7.35".
+func (e extraUsage) spent() string {
+	places := int(e.DecimalPlaces)
+	if places < 0 || places > 6 {
+		places = 2
+	}
+	amount := e.UsedCredits / math.Pow(10, float64(places))
+	symbol := map[string]string{"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥"}[e.Currency]
+	if symbol == "" {
+		symbol = e.Currency + " "
+	}
+	return fmt.Sprintf("%s%.*f", symbol, places, amount)
 }
 
 // resetTime accepts either an RFC3339 string or a Unix timestamp, since the

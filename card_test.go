@@ -61,7 +61,7 @@ func parseSample(t *testing.T) usage {
 
 func TestBuildCardFromLimits(t *testing.T) {
 	now := time.Date(2026, 8, 30, 16, 34, 0, 0, time.UTC)
-	c := buildCard(parseSample(t), "Claude", "staroflife", "5h", false, now)
+	c := buildCard(parseSample(t), options{title: "Claude", symbol: "staroflife", bar: "5h"}, now)
 
 	if c.MetricsBarValue != "57%" {
 		t.Errorf("bar = %q, want %q", c.MetricsBarValue, "57%")
@@ -89,11 +89,11 @@ func TestBarSelection(t *testing.T) {
 	u := parseSample(t)
 	now := time.Date(2026, 8, 30, 16, 34, 0, 0, time.UTC)
 	for bar, want := range map[string]string{"5h": "57%", "7d": "93%", "min": "57%"} {
-		if got := buildCard(u, "Claude", "staroflife", bar, false, now).MetricsBarValue; got != want {
+		if got := buildCard(u, options{title: "Claude", symbol: "staroflife", bar: bar}, now).MetricsBarValue; got != want {
 			t.Errorf("-bar %s = %q, want %q", bar, got, want)
 		}
 	}
-	if got := buildCard(u, "Claude", "staroflife", "5h", true, now).MetricsBarValue; got != "6/9" {
+	if got := buildCard(u, options{title: "Claude", symbol: "staroflife", bar: "5h", lives: true}, now).MetricsBarValue; got != "6/9" {
 		t.Errorf("-lives bar = %q, want %q", got, "6/9")
 	}
 }
@@ -120,6 +120,133 @@ func TestResolveVersion(t *testing.T) {
 	} {
 		if got := resolveVersion(c.stamped, c.module); got != c.want {
 			t.Errorf("resolveVersion(%q, %q) = %q, want %q", c.stamped, c.module, got, c.want)
+		}
+	}
+}
+
+// A temporary capacity grant would most plausibly arrive either as a new kind
+// inside limits, or as a codenamed top-level field. Neither may be dropped.
+const grantPayload = `{
+  "five_hour": {"utilization": 51, "resets_at": "2026-08-31T16:19:59+00:00"},
+  "seven_day": {"utilization": 13, "resets_at": "2026-09-03T10:59:59+00:00"},
+  "omelette_promotional": {"utilization": 25, "resets_at": "2026-09-07T00:00:00+00:00"},
+  "nimbus_quill": {"utilization": 0, "resets_at": null},
+  "tangelo": null,
+  "member_dashboard_available": false,
+  "extra_usage": {"is_enabled": true, "currency": "USD", "decimal_places": 2.0, "used_credits": 735.0},
+  "limits": [
+    {"kind":"session","group":"session","percent":51,"resets_at":"2026-08-31T16:19:59+00:00","scope":null},
+    {"kind":"weekly_all","group":"weekly","percent":13,"resets_at":"2026-09-03T10:59:59+00:00","scope":null},
+    {"kind":"promotional_boost","group":"promo","percent":25,"resets_at":"2026-09-07T00:00:00+00:00","scope":null}
+  ]
+}`
+
+func parseGrant(t *testing.T) usage {
+	t.Helper()
+	var u usage
+	if err := json.Unmarshal([]byte(grantPayload), &u); err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+// An unrecognised limits kind must show up on its own, with no code change.
+func TestUnknownLimitKindBecomesARow(t *testing.T) {
+	rows := parseGrant(t).rows()
+	if len(rows) != 3 {
+		t.Fatalf("got %d rows, want 3: %+v", len(rows), rows)
+	}
+	if rows[2].label != "promotional_boost" || rows[2].used != 25 {
+		t.Errorf("unknown kind became %+v", rows[2])
+	}
+	// It is not one of the windows -bar can name, so it must not hijack the bar.
+	if got := barValue(rows, "5h"); got != 49 {
+		t.Errorf("bar = %v, want 49 (the 5h window)", got)
+	}
+}
+
+func TestUnknownTopLevelWindows(t *testing.T) {
+	u := parseGrant(t)
+	var got []string
+	for _, r := range u.unknownWindows() {
+		got = append(got, r.label)
+	}
+	want := []string{"nimbus_quill", "omelette_promotional"} // sorted, nulls dropped
+	if len(got) != len(want) {
+		t.Fatalf("unknownWindows = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unknownWindows = %v, want %v", got, want)
+		}
+	}
+
+	// Off by default: the card stays about the plan windows.
+	base := buildCard(u, options{bar: "5h"}, time.Now())
+	if len(base.Metrics) != 3 {
+		t.Errorf("default card had %d rows, want 3", len(base.Metrics))
+	}
+
+	c := buildCard(u, options{bar: "5h", extra: true, credits: true}, time.Now())
+	titles := []string{}
+	for _, m := range c.Metrics {
+		titles = append(titles, m.Title)
+	}
+	if len(titles) != 6 || titles[3] != "nimbus_quill" || titles[4] != "omelette_promotional" || titles[5] != "Credits" {
+		t.Errorf("-extra -credits card rows = %v", titles)
+	}
+	if c.Metrics[5].NormalizedValue != nil {
+		t.Error("credits are money, so the row must not draw a bar")
+	}
+	if c.Metrics[5].FormattedValue != "$7.35 used" {
+		t.Errorf("credits row = %q", c.Metrics[5].FormattedValue)
+	}
+	// nimbus_quill sits at 0% used, which is 100% left; the bar must ignore it.
+	if c.MetricsBarValue != "49%" {
+		t.Errorf("bar = %q, want 49%%", c.MetricsBarValue)
+	}
+}
+
+func TestNewWindowsAreAnnouncedOnce(t *testing.T) {
+	var s state
+	if added := s.noteWindows([]string{"nimbus_quill"}); len(added) != 1 || added[0] != "nimbus_quill" {
+		t.Fatalf("first sighting = %v", added)
+	}
+	if added := s.noteWindows([]string{"nimbus_quill"}); len(added) != 0 {
+		t.Errorf("the same window was announced twice: %v", added)
+	}
+	if added := s.noteWindows([]string{"nimbus_quill", "omelette_promotional"}); len(added) != 1 || added[0] != "omelette_promotional" {
+		t.Errorf("a newly granted window was missed: %v", added)
+	}
+}
+
+// A malformed optional field must cost only that field, never the whole card.
+func TestBrokenExtraUsageDoesNotBreakTheCard(t *testing.T) {
+	var u usage
+	body := `{"limits":[{"kind":"session","percent":51,"resets_at":"2026-08-31T16:19:59+00:00"}],
+	          "extra_usage":{"used_credits":"lots","is_enabled":true}}`
+	if err := json.Unmarshal([]byte(body), &u); err != nil {
+		t.Fatalf("a broken extra_usage failed the whole parse: %v", err)
+	}
+	if u.ExtraUsage != nil {
+		t.Error("a broken extra_usage should be dropped, not half-decoded")
+	}
+	if len(u.rows()) != 1 {
+		t.Errorf("the plan windows were lost: %+v", u.rows())
+	}
+}
+
+func TestExtraUsageSpent(t *testing.T) {
+	for _, c := range []struct {
+		e    extraUsage
+		want string
+	}{
+		{extraUsage{Currency: "USD", DecimalPlaces: 2, UsedCredits: 735}, "$7.35"},
+		{extraUsage{Currency: "JPY", DecimalPlaces: 0, UsedCredits: 1200}, "¥1200"},
+		{extraUsage{Currency: "XYZ", DecimalPlaces: 2, UsedCredits: 5}, "XYZ 0.05"},
+	} {
+		if got := c.e.spent(); got != c.want {
+			t.Errorf("spent() = %q, want %q", got, c.want)
 		}
 	}
 }

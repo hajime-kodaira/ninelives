@@ -58,6 +58,8 @@ type options struct {
 	symbol   string
 	bar      string
 	lives    bool
+	extra    bool
+	credits  bool
 	raw      bool
 	stdout   bool
 	timeout  time.Duration
@@ -79,6 +81,8 @@ func (o *options) bind(fs *flag.FlagSet, sub string) {
 	fs.StringVar(&o.symbol, "symbol", "staroflife", "SF Symbol name for the card")
 	fs.StringVar(&o.bar, "bar", "5h", "which window drives the menu bar value: 5h, 7d or min")
 	fs.BoolVar(&o.lives, "lives", false, `show "6/9" instead of "65%"`)
+	fs.BoolVar(&o.extra, "extra", false, "also show allowance windows the tool does not recognise")
+	fs.BoolVar(&o.credits, "credits", false, "also show extra-usage credits spent")
 	fs.DurationVar(&o.timeout, "timeout", 15*time.Second, "HTTP timeout")
 
 	switch sub {
@@ -233,7 +237,9 @@ func encodeCard(o options) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("%w (token from %s)", err, src)
 	}
-	clearState(o.out)
+	st := loadState(o.out)
+	st.clearBackoff()
+	saveState(o.out, st)
 	var u usage
 	if err := json.Unmarshal(body, &u); err != nil {
 		return nil, fmt.Errorf("parsing usage response: %w", err)
@@ -241,11 +247,29 @@ func encodeCard(o options) ([]byte, error) {
 	if len(u.rows()) == 0 {
 		return nil, errors.New("usage response carried no limit windows (run with -raw to inspect)")
 	}
-	enc, err := json.MarshalIndent(buildCard(u, o.title, o.symbol, o.bar, o.lives, time.Now()), "", "  ")
+	noteNewWindows(o, u)
+	enc, err := json.MarshalIndent(buildCard(u, o, time.Now()), "", "  ")
 	if err != nil {
 		return nil, err
 	}
 	return append(enc, '\n'), nil
+}
+
+// noteNewWindows announces an allowance the card does not know about, once,
+// the first time the API mentions it. A temporary capacity grant would arrive
+// this way, and going unnoticed is the failure worth avoiding.
+func noteNewWindows(o options, u usage) {
+	unknown := u.unknownWindows()
+	names := make([]string, 0, len(unknown))
+	for _, r := range unknown {
+		names = append(names, r.label)
+	}
+	st := loadState(o.out)
+	if added := st.noteWindows(names); len(added) > 0 && !o.extra {
+		fmt.Fprintf(os.Stderr, "ninelives: the API reported an allowance this card does not show: %s (add -extra)\n",
+			strings.Join(added, ", "))
+	}
+	saveState(o.out, st)
 }
 
 func usageText(w *os.File) {
@@ -262,6 +286,8 @@ flags (all subcommands):
   -out PATH        metrics file RunCat Neo reads
                    (default ~/.config/runcat-neo-metrics/claude.json)
   -lives           show "6/9" instead of "65%"
+  -extra           also show allowance windows the tool does not recognise
+  -credits         also show extra-usage credits spent
   -bar 5h|7d|min   which window drives the menu bar value (default 5h)
   -title NAME      card title (default Claude)
   -symbol NAME     SF Symbol for the card (default staroflife)
