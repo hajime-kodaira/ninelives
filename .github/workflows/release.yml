@@ -1,0 +1,41 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # Built on macOS so the darwin binaries are ad-hoc signed by the native
+    # toolchain; Apple Silicon refuses to run an unsigned one.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.22'
+          cache: false
+
+      - run: go test ./...
+
+      - name: build
+        run: |
+          mkdir -p dist
+          for arch in arm64 amd64; do
+            GOOS=darwin GOARCH=$arch CGO_ENABLED=0 go build \
+              -trimpath \
+              -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+              -o "dist/ninelives_darwin_${arch}" .
+          done
+          cd dist && shasum -a 256 ninelives_* > SHA256SUMS && cat SHA256SUMS
+
+      - name: verify the native binary runs
+        run: ./dist/ninelives_darwin_arm64 version
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --title "$GITHUB_REF_NAME"

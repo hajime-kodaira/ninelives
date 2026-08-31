@@ -26,7 +26,8 @@ import (
 	"time"
 )
 
-const version = "1.0.0"
+// version is stamped by the release build with -ldflags "-X main.version=...".
+var version = "dev"
 
 type options struct {
 	out      string

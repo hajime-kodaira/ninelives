@@ -21,7 +21,6 @@ const (
 	anthropicBeta = "oauth-2025-04-20"
 	anthropicVers = "2023-06-01"
 	keychainSvc   = "Claude Code-credentials"
-	userAgent     = "ninelives/1.0"
 )
 
 // --- response shape ----------------------------------------------------
@@ -141,7 +140,7 @@ func fetchUsage(token string, timeout time.Duration) ([]byte, http.Header, error
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", anthropicBeta)
 	req.Header.Set("anthropic-version", anthropicVers)
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", "ninelives/"+version)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := (&http.Client{Timeout: timeout}).Do(req)

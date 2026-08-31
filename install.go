@@ -156,8 +156,18 @@ func resolveBin(want string) (string, error) {
 	return want, nil
 }
 
+// ephemeral reports whether a binary sits somewhere that will not survive:
+// a `go run` build directory, or a temp dir someone downloaded a release into.
 func ephemeral(path string) bool {
-	return strings.Contains(path, "/go-build") || strings.HasPrefix(path, os.TempDir())
+	if strings.Contains(path, "/go-build") {
+		return true
+	}
+	for _, dir := range []string{os.TempDir(), "/tmp/", "/private/tmp/", "/var/tmp/"} {
+		if dir != "" && strings.HasPrefix(path, strings.TrimSuffix(dir, "/")+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func copyExecutable(src, dst string) error {

@@ -31,20 +31,48 @@ Claude Code の `/usage` が内部で叩いているエンドポイント `GET h
 
 ## インストール
 
+clone は不要です。3通りあります。
+
+### 1. `go install`（Go がある人向け）
+
+```bash
+go install github.com/hajime-kodaira/ninelives@latest
+ninelives install
+```
+
+`~/go/bin` が PATH に無い場合は `$(go env GOPATH)/bin/ninelives install` としてください。
+
+リポジトリが Private の間は Go のモジュールプロキシから引けないので、一度だけ次の設定が要ります（Public にすれば不要）。
+
+```bash
+go env -w GOPRIVATE=github.com/hajime-kodaira/*
+git config --global url."git@github.com:".insteadOf "https://github.com/"
+```
+
+### 2. リリースバイナリ（Go すら不要）
+
+```bash
+mkdir -p ~/bin
+gh release download -R hajime-kodaira/ninelives -p ninelives_darwin_arm64 -O ~/bin/ninelives
+chmod +x ~/bin/ninelives
+~/bin/ninelives install
+```
+
+Intel Mac なら `ninelives_darwin_amd64` です。チェックサムは同じリリースの `SHA256SUMS` にあります。バイナリは macOS ランナーでビルドしてアドホック署名済みなので、Apple Silicon でもそのまま起動します。
+
+### 3. ソースから
+
 ```bash
 git clone git@github.com:hajime-kodaira/ninelives.git
 cd ninelives
 go run . install
 ```
 
-`go run` のバイナリは一時ディレクトリに作られて消えてしまうので、`install` はそれを検知して自動的に `~/bin/ninelives` へコピーし、そのパスを launchd に登録します。`6/9` 表示にしたいなら `go run . install -lives` です。
+`go run` のバイナリは一時ディレクトリに作られて消えてしまうので、`install` はそれを検知して自動的に `~/bin/ninelives` へコピーし、そのパスを launchd に登録します。ダウンロードしたバイナリを `/tmp` から実行した場合も同じです。ビルド先を自分で決めたいときは `-bin` を使ってください。
 
-自分でビルド先を決めたい場合はこちら。
+---
 
-```bash
-go build -o ~/bin/ninelives .
-~/bin/ninelives install
-```
+`6/9` 表示にしたいなら、どの方法でも `install` に `-lives` を付けます。
 
 `install` がやることは3つです。
 

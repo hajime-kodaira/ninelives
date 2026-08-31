@@ -82,8 +82,15 @@ func TestEphemeral(t *testing.T) {
 	if !ephemeral(filepath.Join(os.TempDir(), "go-build123", "b001", "exe", "ninelives")) {
 		t.Error("a go run build directory should count as ephemeral")
 	}
-	if ephemeral("/Users/someone/bin/ninelives") {
-		t.Error("an installed path should not count as ephemeral")
+	for _, p := range []string{"/tmp/ninelives", "/private/tmp/ninelives", "/var/tmp/ninelives"} {
+		if !ephemeral(p) {
+			t.Errorf("a release downloaded to %s should count as ephemeral", p)
+		}
+	}
+	for _, p := range []string{"/Users/someone/bin/ninelives", "/usr/local/bin/ninelives", "/Users/tmp-fan/bin/ninelives"} {
+		if ephemeral(p) {
+			t.Errorf("%s should not count as ephemeral", p)
+		}
 	}
 }
 
