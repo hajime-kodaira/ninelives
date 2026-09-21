@@ -449,15 +449,24 @@ func plistXML(label string, args []string, logFile string, interval int) []byte 
 	b.WriteString(xml.Header)
 	b.WriteString("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n")
 	b.WriteString("<plist version=\"1.0\">\n<dict>\n")
-	b.WriteString("\t<key>Label</key>\n\t<string>" + esc(label) + "</string>\n")
+	// Three WriteStrings rather than one concatenated argument: gopls flags
+	// the concatenation, and the plist bytes must stay exactly as the golden
+	// test has them.
+	b.WriteString("\t<key>Label</key>\n\t<string>")
+	b.WriteString(esc(label))
+	b.WriteString("</string>\n")
 	b.WriteString("\t<key>ProgramArguments</key>\n\t<array>\n")
 	for _, a := range args {
-		b.WriteString("\t\t<string>" + esc(a) + "</string>\n")
+		b.WriteString("\t\t<string>")
+		b.WriteString(esc(a))
+		b.WriteString("</string>\n")
 	}
 	b.WriteString("\t</array>\n")
 	fmt.Fprintf(&b, "\t<key>StartInterval</key>\n\t<integer>%d</integer>\n", interval)
 	b.WriteString("\t<key>RunAtLoad</key>\n\t<true/>\n")
-	b.WriteString("\t<key>StandardErrorPath</key>\n\t<string>" + esc(logFile) + "</string>\n")
+	b.WriteString("\t<key>StandardErrorPath</key>\n\t<string>")
+	b.WriteString(esc(logFile))
+	b.WriteString("</string>\n")
 	b.WriteString("</dict>\n</plist>\n")
 	return []byte(b.String())
 }
