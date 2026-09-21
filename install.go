@@ -19,8 +19,6 @@ import (
 )
 
 const (
-	agentLabel = "io.local.ninelives"
-
 	// Measured against the live endpoint: 5 requests succeed inside a 5 minute
 	// window and the 6th returns 429 with Retry-After: 300. So one request per
 	// 60s is exactly the whole budget, and anything faster is guaranteed to be
@@ -31,28 +29,46 @@ const (
 	defaultInterval = 120
 )
 
-func plistPath() string {
-	return filepath.Join(homeDir(), "Library", "LaunchAgents", agentLabel+".plist")
+// agentLabelFor names the launchd agent per provider. Codex gets its own so
+// both cards can run side by side without one booting out the other.
+func agentLabelFor(provider string) string {
+	if provider == "codex" {
+		return "io.local.ninelives.codex"
+	}
+	return "io.local.ninelives"
 }
 
-func logPath() string {
-	return filepath.Join(homeDir(), "Library", "Logs", "ninelives.log")
+func plistPath(o options) string {
+	return filepath.Join(homeDir(), "Library", "LaunchAgents", agentLabelFor(o.provider)+".plist")
+}
+
+func logPath(o options) string {
+	name := "ninelives.log"
+	if o.provider == "codex" {
+		name = "ninelives-codex.log"
+	}
+	return filepath.Join(homeDir(), "Library", "Logs", name)
 }
 
 func defaultBin() string {
 	return filepath.Join(homeDir(), "bin", "ninelives")
 }
 
-func validateInterval(n int) error {
-	if n < minInterval {
-		return fmt.Errorf("-interval %d is below the %ds floor: the endpoint allows 5 requests per 5 minutes, so anything faster is throttled outright", n, minInterval)
+func validateInterval(n int, provider string) error {
+	if n >= minInterval {
+		return nil
 	}
-	return nil
+	if provider == "codex" {
+		return fmt.Errorf("-interval %d is below the %ds floor", n, minInterval)
+	}
+	return fmt.Errorf("-interval %d is below the %ds floor: the endpoint allows 5 requests per 5 minutes, so anything faster is throttled outright", n, minInterval)
 }
 
-// intervalNote warns when the agent would eat most of the shared budget.
-func intervalNote(n int) string {
-	if n >= defaultInterval {
+// intervalNote warns when the agent would eat most of the shared budget. The
+// budget is a measured fact about the Claude endpoint; the codex endpoints are
+// unmeasured, so there is no equivalent note to make there.
+func intervalNote(n int, provider string) string {
+	if n >= defaultInterval || provider == "codex" {
 		return ""
 	}
 	return fmt.Sprintf("note: at %ds this uses %d of the 5 requests each 5 minute window, leaving little for Claude Code's own /usage", n, 300/n)
@@ -64,10 +80,10 @@ func installAgent(o options, extraArgs []string) error {
 	if runtime.GOOS != "darwin" {
 		return errors.New("install manages a launchd agent, which only exists on macOS")
 	}
-	if err := validateInterval(o.interval); err != nil {
+	if err := validateInterval(o.interval, o.provider); err != nil {
 		return err
 	}
-	if note := intervalNote(o.interval); note != "" {
+	if note := intervalNote(o.interval, o.provider); note != "" {
 		fmt.Println(note)
 	}
 
@@ -76,8 +92,8 @@ func installAgent(o options, extraArgs []string) error {
 		return err
 	}
 	if o.dryRun {
-		args := append([]string{bin, "-out", o.out}, extraArgs...)
-		_, err := os.Stdout.Write(plistXML(args, logPath(), o.interval))
+		args := agentCommand(o, bin, extraArgs)
+		_, err := os.Stdout.Write(plistXML(agentLabelFor(o.provider), args, logPath(o), o.interval))
 		return err
 	}
 	if copyNeeded {
@@ -94,23 +110,23 @@ func installAgent(o options, extraArgs []string) error {
 		return err
 	}
 
-	args := append([]string{bin, "-out", o.out}, extraArgs...)
-	plist := plistPath()
+	args := agentCommand(o, bin, extraArgs)
+	plist := plistPath(o)
 	fmt.Printf("==> writing %s\n", plist)
-	if err := os.MkdirAll(filepath.Dir(logPath()), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(logPath(o)), 0o755); err != nil {
 		return err
 	}
-	if err := writeAtomic(plist, plistXML(args, logPath(), o.interval)); err != nil {
+	if err := writeAtomic(plist, plistXML(agentLabelFor(o.provider), args, logPath(o), o.interval)); err != nil {
 		return err
 	}
 
-	st := loadState(o.out)
+	st := loadState(o)
 	st.AgentVersion = versionString()
-	saveState(o.out, st)
+	saveState(o, st)
 
 	fmt.Println("==> loading the launchd agent")
 	// bootout first so a re-run replaces the previous registration.
-	_ = launchctl("bootout", domain()+"/"+agentLabel)
+	_ = launchctl("bootout", domain()+"/"+agentLabelFor(o.provider))
 	if err := launchctl("bootstrap", domain(), plist); err != nil {
 		return fmt.Errorf("launchctl bootstrap: %w", err)
 	}
@@ -127,8 +143,19 @@ Register the file in RunCat Neo:
   ~/.config is hidden, so press Cmd+Shift+G and paste the path above.
 
 Errors from the scheduled runs land in %s
-`, o.out, o.interval, logPath())
+`, o.out, o.interval, logPath(o))
 	return nil
+}
+
+// agentCommand is the argv the launchd agent replays: the binary, the provider
+// prefix when this card is not the claude one, then the user's flags.
+func agentCommand(o options, bin string, extra []string) []string {
+	args := []string{bin}
+	if o.provider == "codex" {
+		args = append(args, "codex")
+	}
+	args = append(args, "-out", o.out)
+	return append(args, extra...)
 }
 
 // targetBin decides which binary path the agent should launch, and whether we
@@ -280,10 +307,10 @@ func uninstallAgent(o options, keepData bool) error {
 	if runtime.GOOS != "darwin" {
 		return errors.New("uninstall manages a launchd agent, which only exists on macOS")
 	}
-	_ = launchctl("bootout", domain()+"/"+agentLabel)
+	_ = launchctl("bootout", domain()+"/"+agentLabelFor(o.provider))
 	fmt.Println("==> unloaded the launchd agent")
 
-	for _, p := range []string{plistPath(), logPath()} {
+	for _, p := range []string{plistPath(o), logPath(o)} {
 		if err := os.Remove(p); err == nil {
 			fmt.Printf("==> removed %s\n", p)
 		} else if !os.IsNotExist(err) {
@@ -291,7 +318,7 @@ func uninstallAgent(o options, keepData bool) error {
 		}
 	}
 	if !keepData {
-		for _, p := range []string{o.out, statePath(o.out)} {
+		for _, p := range []string{o.out, statePath(o)} {
 			if err := os.Remove(p); err == nil {
 				fmt.Printf("==> removed %s\n", p)
 			} else if !os.IsNotExist(err) {
@@ -306,14 +333,14 @@ func uninstallAgent(o options, keepData bool) error {
 // --- status ------------------------------------------------------------
 
 func showStatus(o options) error {
-	st := loadState(o.out)
+	st := loadState(o)
 
-	fmt.Printf("agent    %s\n", agentState())
-	fmt.Printf("plist    %s\n", exists(plistPath()))
-	reportBinaries(st)
-	fmt.Printf("log      %s\n", exists(logPath()))
+	fmt.Printf("agent    %s\n", agentState(o))
+	fmt.Printf("plist    %s\n", exists(plistPath(o)))
+	reportBinaries(st, o)
+	fmt.Printf("log      %s\n", exists(logPath(o)))
 	fmt.Printf("metrics  %s\n", o.out)
-	fmt.Printf("backoff  %s\n", loadState(o.out).describe(time.Now()))
+	fmt.Printf("backoff  %s\n", loadState(o).describe(time.Now()))
 
 	data, err := os.ReadFile(o.out)
 	if err != nil {
@@ -340,11 +367,11 @@ func showStatus(o options) error {
 // version compares to the one being run right now. Updating is just replacing
 // the binary, so these two are expected to match; a mismatch means either the
 // update did not land where the agent looks, or the plist predates it.
-func reportBinaries(st state) {
+func reportBinaries(st state, o options) {
 	mine := versionString()
 	fmt.Printf("this     %s\n", mine)
 
-	bin, err := registeredBin()
+	bin, err := registeredBin(o)
 	if err != nil {
 		fmt.Println("runs     (no agent installed)")
 		return
@@ -362,8 +389,8 @@ func reportBinaries(st state) {
 
 // registeredBin reads the binary path out of the installed plist rather than
 // trusting a recorded copy, so a hand-edited plist still reports the truth.
-func registeredBin() (string, error) {
-	out, err := exec.Command("plutil", "-extract", "ProgramArguments.0", "raw", "-o", "-", plistPath()).Output()
+func registeredBin(o options) (string, error) {
+	out, err := exec.Command("plutil", "-extract", "ProgramArguments.0", "raw", "-o", "-", plistPath(o)).Output()
 	if err != nil {
 		return "", err
 	}
@@ -382,11 +409,11 @@ func binVersion(path string) string {
 	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(out)), "ninelives "))
 }
 
-func agentState() string {
+func agentState(o options) string {
 	if runtime.GOOS != "darwin" {
 		return "n/a (not macOS)"
 	}
-	if err := launchctl("print", domain()+"/"+agentLabel); err != nil {
+	if err := launchctl("print", domain()+"/"+agentLabelFor(o.provider)); err != nil {
 		return "not loaded"
 	}
 	return "loaded"
@@ -417,20 +444,29 @@ func launchctl(args ...string) error {
 	return nil
 }
 
-func plistXML(args []string, logFile string, interval int) []byte {
+func plistXML(label string, args []string, logFile string, interval int) []byte {
 	var b strings.Builder
 	b.WriteString(xml.Header)
 	b.WriteString("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n")
 	b.WriteString("<plist version=\"1.0\">\n<dict>\n")
-	b.WriteString("\t<key>Label</key>\n\t<string>" + esc(agentLabel) + "</string>\n")
+	// Three WriteStrings rather than one concatenated argument: gopls flags
+	// the concatenation, and the plist bytes must stay exactly as the golden
+	// test has them.
+	b.WriteString("\t<key>Label</key>\n\t<string>")
+	b.WriteString(esc(label))
+	b.WriteString("</string>\n")
 	b.WriteString("\t<key>ProgramArguments</key>\n\t<array>\n")
 	for _, a := range args {
-		b.WriteString("\t\t<string>" + esc(a) + "</string>\n")
+		b.WriteString("\t\t<string>")
+		b.WriteString(esc(a))
+		b.WriteString("</string>\n")
 	}
 	b.WriteString("\t</array>\n")
 	fmt.Fprintf(&b, "\t<key>StartInterval</key>\n\t<integer>%d</integer>\n", interval)
 	b.WriteString("\t<key>RunAtLoad</key>\n\t<true/>\n")
-	b.WriteString("\t<key>StandardErrorPath</key>\n\t<string>" + esc(logFile) + "</string>\n")
+	b.WriteString("\t<key>StandardErrorPath</key>\n\t<string>")
+	b.WriteString(esc(logFile))
+	b.WriteString("</string>\n")
 	b.WriteString("</dict>\n</plist>\n")
 	return []byte(b.String())
 }

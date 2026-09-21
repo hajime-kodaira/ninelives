@@ -250,3 +250,40 @@ func TestExtraUsageSpent(t *testing.T) {
 		}
 	}
 }
+
+// "The Claude card is unchanged" is a claim about bytes, so test the bytes:
+// this is the exact JSON the claude card must keep producing for that payload.
+func TestClaudeCardJSONIsStable(t *testing.T) {
+	now := time.Date(2026, 8, 30, 16, 34, 0, 0, time.UTC)
+	c := buildCard(parseSample(t), options{title: "Claude", symbol: "staroflife", bar: "5h"}, now)
+	enc, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{
+  "title": "Claude",
+  "symbol": "staroflife",
+  "metricsBarValue": "57%",
+  "metrics": [
+    {
+      "title": "5h",
+      "formattedValue": "57% left · 1h36m",
+      "normalizedValue": 0.57
+    },
+    {
+      "title": "7d",
+      "formattedValue": "93% left · 3d18h",
+      "normalizedValue": 0.93
+    },
+    {
+      "title": "7d Fable",
+      "formattedValue": "89% left · 3d18h",
+      "normalizedValue": 0.89
+    }
+  ],
+  "lastUpdatedDate": "2026-08-30T16:34:00Z"
+}`
+	if string(enc) != want {
+		t.Errorf("claude card JSON changed:\n got:\n%s\nwant:\n%s", enc, want)
+	}
+}

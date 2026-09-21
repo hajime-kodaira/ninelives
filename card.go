@@ -40,13 +40,7 @@ func buildCard(u usage, o options, now time.Time) card {
 		rows = append(rows, u.unknownWindows()...)
 	}
 	for _, r := range rows {
-		left := clamp(100-r.used, 0, 100)
-		norm := left / 100
-		c.Metrics = append(c.Metrics, metric{
-			Title:           r.label,
-			FormattedValue:  shortValue(left, o.lives) + " left" + until(now, r.resets),
-			NormalizedValue: &norm,
-		})
+		c.Metrics = append(c.Metrics, windowRow(r, o, now))
 	}
 	if o.credits && u.ExtraUsage != nil && u.ExtraUsage.IsEnabled {
 		// Money, not a percentage: no normalizedValue means no bar.
@@ -59,6 +53,40 @@ func buildCard(u usage, o options, now time.Time) card {
 	// sitting at 0% must not make the bar look full.
 	c.MetricsBarValue = shortValue(barValue(u.rows(), o.bar), o.lives)
 	return c
+}
+
+// buildCodexCard renders the Codex windows plus the reset-credit count. The
+// count is not a percentage, so like Claude's credits it gets no bar. A nil
+// resets drops the row: its fetch failed, and that must not cost the card.
+func buildCodexCard(u codexUsage, resets *codexResets, o options, now time.Time) card {
+	c := card{
+		Title:           o.title,
+		Symbol:          o.symbol,
+		LastUpdatedDate: now.UTC().Format(time.RFC3339),
+	}
+	rows := u.rows()
+	for _, r := range rows {
+		c.Metrics = append(c.Metrics, windowRow(r, o, now))
+	}
+	if resets != nil {
+		c.Metrics = append(c.Metrics, metric{
+			Title:          "Resets",
+			FormattedValue: fmt.Sprintf("%d available", resets.AvailableCount),
+		})
+	}
+	c.MetricsBarValue = shortValue(barValue(rows, o.bar), o.lives)
+	return c
+}
+
+// windowRow renders one percentage window with its bar.
+func windowRow(r row, o options, now time.Time) metric {
+	left := clamp(100-r.used, 0, 100)
+	norm := left / 100
+	return metric{
+		Title:           r.label,
+		FormattedValue:  shortValue(left, o.lives) + " left" + until(now, r.resets),
+		NormalizedValue: &norm,
+	}
 }
 
 // barValue picks the remaining percentage shown in the menu bar itself.
