@@ -1,15 +1,23 @@
 # ninelives
 
-Claude の**残り使用率**を [RunCat Neo](https://kyome.io/runcat/) のメニューバーに出す macOS 向けの小さな Go ツールです。猫の九生（nine lives）＝残機、という名前です。
+Claude と OpenAI Codex CLI の**残り使用率**を [RunCat Neo](https://kyome.io/runcat/) のメニューバーに出す macOS 向けの小さな Go ツールです。猫の九生（nine lives）＝残機、という名前です。
 
 ```
-🩺 57%      ← メニューバー
+🩺 57%      ← メニューバー（Claude）
 ┌───────────────────────────────────────────┐
 │ Claude                                    │
 │ 5h        57% left · 1h36m  ████████░░░░░ │
 │ 7d        93% left · 3d18h  ████████████░ │
 │ 7d Fable  89% left · 3d18h  ████████████░ │
 └───────────────────────────────────────────┘
+
+⚡ 97%      ← メニューバー（Codex）
+┌────────────────────────────────────┐
+│ Codex                              │
+│ 5h   97% left · 2h56m  ██████████░ │
+│ 7d   99% left · 6d22h  ██████████ │
+│ Resets  1                          │
+└────────────────────────────────────┘
 ```
 
 `-lives` を付けると `57%` の代わりに `6/9` 表示になります。
@@ -22,12 +30,38 @@ Claude Code の `/usage` が内部で叩いているエンドポイント `GET h
 
 依存は Go の標準ライブラリのみで、シェルスクリプトもありません。定期実行の launchd エージェント登録まで含めて `ninelives install` の一発で完結します。
 
+## Codex の usage（別カード）
+
+`ninelives codex` を頭に付けると、OpenAI Codex CLI の残り使用率を**別のカード**として出せます。Claude 側の挙動は一切変わりません。
+
+```bash
+ninelives codex install     # io.local.ninelives.codex として別エージェントを登録
+ninelives codex status      # codex.json とエージェントの状態を見る
+ninelives codex uninstall
+```
+
+| | Claude | Codex |
+| --- | --- | --- |
+| データ元 | `GET api.anthropic.com/api/oauth/usage` | `GET chatgpt.com/backend-api/wham/usage` ＋ `GET …/wham/rate-limit-reset-credits` |
+| トークン | Keychain `Claude Code-credentials` / `~/.claude/.credentials.json` | `~/.codex/auth.json`（`$CODEX_HOME` 可変） |
+| metrics ファイル | `claude.json` | `codex.json` |
+| カード | 🩺 `Claude` / `staroflife` | ⚡ `Codex` / `bolt` |
+| エージェント | `io.local.ninelives` | `io.local.ninelives.codex` |
+
+Codex 側は Claude の `/usage` と同じく非公式エンドポイントで、Codex CLI のレートリミット表示（`/status`）が内部で叩いているものと同じです。窓のラベル（`5h` / `7d`）はレスポンスの `limit_window_seconds` から動的に出すので、口座によって窓の構成が違っていても壊れません。
+
+**Resets 行には専用エンドポイントの `available_count` を使っています。** `wham/usage` にも `rate_limit_reset_credits.available_count` が入っていますが、実測で Codex アプリの表示と食い違った（3 vs 1）ため、アプリと一致する専用エンドポイントの方を信用します。この取得に限ってはサイドカー扱いで、そちらだけ失敗しても窓の行だけのカードを書きます（エラーログには理由が残ります）。
+
+- **401 が続くとき**は ChatGPT トークンが失効しています。更新は Codex CLI 自身がやるので、`codex` を一度起動すれば直ります。
+- **レート制限は未計測です。** Codex CLI 自身が同じエンドポイントを常時ポーリングしているため既定の 120 秒間隔で問題なかったですが、429 を食らったら Claude と同じ仕組みで backoff します（`ninelives codex status` の `backoff` 行で確認できます）。
+
 ## 必要なもの
 
 - macOS
 - [RunCat Neo](https://kyome.io/runcat/)
 - Go 1.22 以降（ビルド時のみ）
 - Claude Code でログイン済みであること（`claude` を一度起動すればトークンが保存されます）
+- Codex カードも出す場合のみ: Codex CLI でログイン済みであること（`codex` を一度起動すれば `~/.codex/auth.json` が保存されます）
 
 ## インストール
 
@@ -121,21 +155,25 @@ backoff  none
 
 ```
 ninelives [flags]              1回だけ取得して metrics ファイルを書く
-ninelives install [flags]      5分間隔で更新する launchd エージェントを登録する
+ninelives codex [flags]        同左（Codex 側の codex.json に）
+ninelives install [flags]      定間隔で更新する launchd エージェントを登録する
+ninelives codex install [flags]  同左（別エージェント io.local.ninelives.codex に）
 ninelives uninstall            エージェントを解除して書いたものを消す
+ninelives codex uninstall
 ninelives status               登録状況と最後に書いたカードを表示する
+ninelives codex status
 ninelives version
 ```
 
 | フラグ | 既定値 | 説明 |
 | --- | --- | --- |
-| `-out` | `~/.config/runcat-neo-metrics/claude.json` | 出力先 |
+| `-out` | `claude.json` / `codex.json`（`~/.config/runcat-neo-metrics/` 内） | 出力先 |
 | `-lives` | false | `57%` ではなく `6/9` で表示する |
 | `-extra` | false | ツールが認識していない枠も行に出す |
-| `-credits` | false | 追加クレジットの使用額を行に出す |
+| `-credits` | false | 追加クレジットの使用額を行に出す（Claude） |
 | `-bar` | `5h` | メニューバーに出す窓。`5h` / `7d` / `min`（最も残りが少ないもの） |
-| `-title` | `Claude` | カードのタイトル |
-| `-symbol` | `staroflife` | カードの SF Symbol 名 |
+| `-title` | `Claude` / `Codex` | カードのタイトル |
+| `-symbol` | `staroflife` / `bolt` | カードの SF Symbol 名 |
 | `-timeout` | `15s` | HTTP タイムアウト |
 | `-raw` | false | API の生レスポンスを表示して終了。ヘッダは標準エラーに出ます（`run` のみ） |
 | `-stdout` | false | ファイルに書かず標準出力へ（`run` のみ） |
@@ -165,8 +203,9 @@ ninelives version
 
 | ファイル | 役割 |
 | --- | --- |
-| `main.go` | サブコマンドの振り分けとフラグ |
-| `usage.go` | 認証トークンの取得と usage エンドポイント |
+| `main.go` | サブコマンドとプロバイダ（claude/codex）の振り分けとフラグ |
+| `usage.go` | Claude の認証トークンの取得と usage エンドポイント |
+| `codex.go` | Codex の認証トークンの取得と wham エンドポイント（usage / reset credits） |
 | `card.go` | RunCat Neo のカード生成と整形 |
 | `state.go` | 429 を食らった時刻の記録（実行をまたぐバックオフ） |
 | `install.go` | launchd エージェントの登録・解除・状態表示 |
@@ -200,7 +239,7 @@ $ ninelives -stdout -extra -credits
 
 つまり **60秒間隔がちょうど予算を使い切る**計算になります。既定を 120 秒にしてあるのは、Claude Code の `/usage` も同じ枠を消費するため半分ほど空けておくためです。60 秒未満は `-interval` が受け付けません。
 
-**429 を受けたら次回以降の実行をスキップします。** launchd の `StartInterval` は固定で「待て」と伝えられないので、`Retry-After` を `~/.config/runcat-neo-metrics/.ninelives-state.json` に記録し、その時刻まではリクエストを投げずに即終了します（終了コード 0）。枠が空けば自動的に再開し、記録は消えます。現在の状態は `ninelives status` の `backoff` 行で分かります。
+**429 を受けたら次回以降の実行をスキップします。** launchd の `StartInterval` は固定で「待て」と伝えられないので、`Retry-After` を `~/.config/runcat-neo-metrics/.ninelives-state.json` に記録し、その時刻まではリクエストを投げずに即終了します（終了コード 0）。枠が空けば自動的に再開し、記録は消えます。現在の状態は `ninelives status` の `backoff` 行で分かります。Codex 側は同じディレクトリの `.ninelives-codex-state.json` に別々に記録するので、片方の 429 がもう片方のカードを止めることはありません。
 
 **失敗しても JSON を上書きしません。** RunCat 側は最後に成功した値を保持したまま「◯分前」だけが古くなるので、止まっていることが見て分かります。エラーは `~/Library/Logs/ninelives.log` に残ります。
 

@@ -1,15 +1,23 @@
 // ninelives reports how much of your Claude usage allowance is left and writes
-// it as a RunCat Neo custom metrics card.
+// it as a RunCat Neo custom metrics card. `ninelives codex` does the same for
+// OpenAI Codex, as a separate card and a separate launchd agent.
 //
-// Data source: GET https://api.anthropic.com/api/oauth/usage — the endpoint
-// Claude Code's /usage command calls. It is undocumented and may change without
-// notice. Authentication reuses the OAuth token Claude Code already stores
-// (macOS Keychain "Claude Code-credentials", or ~/.claude/.credentials.json).
+// Claude data source: GET https://api.anthropic.com/api/oauth/usage — the
+// endpoint Claude Code's /usage command calls. It is undocumented and may
+// change without notice. Authentication reuses the OAuth token Claude Code
+// already stores (macOS Keychain "Claude Code-credentials", or
+// ~/.claude/.credentials.json).
+//
+// Codex data source: GET https://chatgpt.com/backend-api/wham/usage and
+// GET .../wham/rate-limit-reset-credits — the endpoints the Codex CLI polls
+// for its rate-limit display. Also undocumented. Authentication reuses the
+// ChatGPT tokens Codex CLI already stores in ~/.codex/auth.json.
 //
 // Limits are shared per account, so these numbers match what Claude Desktop
-// shows under Settings > Usage.
+// shows under Settings > Usage and what the Codex app shows for rate limits.
 //
-//	ninelives              write the metrics file once
+//	ninelives              write the Claude metrics file once
+//	ninelives codex        write the Codex metrics file once
 //	ninelives install      register a launchd agent that keeps it fresh
 //	ninelives uninstall    undo that
 //	ninelives status       show what is registered and what it last wrote
@@ -53,6 +61,7 @@ func resolveVersion(stamped, module string) string {
 }
 
 type options struct {
+	provider string
 	out      string
 	title    string
 	symbol   string
@@ -69,16 +78,42 @@ type options struct {
 	keep     bool
 }
 
-func defaultOut() string {
-	return filepath.Join(homeDir(), ".config", "runcat-neo-metrics", "claude.json")
+func defaultOut(provider string) string {
+	return filepath.Join(homeDir(), ".config", "runcat-neo-metrics", metricsFile(provider))
+}
+
+// metricsFile is the file RunCat reads for each provider. Claude keeps its
+// historical name; codex is a sibling card in the same directory.
+func metricsFile(provider string) string {
+	if provider == "codex" {
+		return "codex.json"
+	}
+	return "claude.json"
+}
+
+// providerTitle and providerSymbol are the per-provider card defaults. Only
+// the card's look changes; every other flag means the same thing.
+func providerTitle(provider string) string {
+	if provider == "codex" {
+		return "Codex"
+	}
+	return "Claude"
+}
+
+func providerSymbol(provider string) string {
+	if provider == "codex" {
+		return "bolt"
+	}
+	return "staroflife"
 }
 
 // bind registers the flags a subcommand accepts. Every subcommand shares the
 // card-shaping flags so `install -lives` and `run -lives` mean the same thing.
-func (o *options) bind(fs *flag.FlagSet, sub string) {
-	fs.StringVar(&o.out, "out", defaultOut(), "path to the metrics JSON RunCat Neo reads")
-	fs.StringVar(&o.title, "title", "Claude", "card title")
-	fs.StringVar(&o.symbol, "symbol", "staroflife", "SF Symbol name for the card")
+func (o *options) bind(fs *flag.FlagSet, sub, provider string) {
+	o.provider = provider
+	fs.StringVar(&o.out, "out", defaultOut(provider), "path to the metrics JSON RunCat Neo reads")
+	fs.StringVar(&o.title, "title", providerTitle(provider), "card title")
+	fs.StringVar(&o.symbol, "symbol", providerSymbol(provider), "SF Symbol name for the card")
 	fs.StringVar(&o.bar, "bar", "5h", "which window drives the menu bar value: 5h, 7d or min")
 	fs.BoolVar(&o.lives, "lives", false, `show "6/9" instead of "65%"`)
 	fs.BoolVar(&o.extra, "extra", false, "also show allowance windows the tool does not recognise")
@@ -99,9 +134,21 @@ func (o *options) bind(fs *flag.FlagSet, sub string) {
 }
 
 func main() {
+	// A provider prefix (claude, codex) selects which card a command works on.
+	// It is optional and defaults to claude, so every existing invocation keeps
+	// behaving exactly as before.
+	prov := "claude"
 	sub, args := "run", os.Args[1:]
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		sub, args = args[0], args[1:]
+		switch args[0] {
+		case "claude", "codex":
+			prov, args = args[0], args[1:]
+			if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+				sub, args = args[0], args[1:]
+			}
+		default:
+			sub, args = args[0], args[1:]
+		}
 	}
 
 	switch sub {
@@ -121,7 +168,7 @@ func main() {
 	fs := flag.NewFlagSet("ninelives "+sub, flag.ExitOnError)
 	fs.Usage = func() { usageText(os.Stderr) }
 	var o options
-	o.bind(fs, sub)
+	o.bind(fs, sub, prov)
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
@@ -177,19 +224,7 @@ func agentArgs(fs *flag.FlagSet) []string {
 
 func runOnce(o options) error {
 	if o.raw {
-		token, src, err := findToken()
-		if err != nil {
-			return err
-		}
-		body, hdr, err := fetchUsage(token, o.timeout)
-		for _, h := range responseHeaders(hdr) {
-			fmt.Fprintln(os.Stderr, h)
-		}
-		if err != nil {
-			return fmt.Errorf("%w (token from %s)", err, src)
-		}
-		_, err = os.Stdout.Write(pretty(body))
-		return err
+		return printRaw(o)
 	}
 	if o.stdout {
 		enc, err := encodeCard(o)
@@ -200,6 +235,39 @@ func runOnce(o options) error {
 		return err
 	}
 	return writeMetrics(o)
+}
+
+// printRaw dumps the provider's usage endpoint to stdout, headers to stderr,
+// so an undocumented endpoint changing shape can be inspected without curl.
+func printRaw(o options) error {
+	if o.provider == "codex" {
+		token, accountID, src, err := findCodexToken()
+		if err != nil {
+			return err
+		}
+		body, hdr, err := codexGet(codexUsageURL, token, accountID, o.timeout)
+		for _, h := range responseHeaders(hdr) {
+			fmt.Fprintln(os.Stderr, h)
+		}
+		if err != nil {
+			return fmt.Errorf("%w (token from %s)", err, src)
+		}
+		_, err = os.Stdout.Write(pretty(body))
+		return err
+	}
+	token, src, err := findToken()
+	if err != nil {
+		return err
+	}
+	body, hdr, err := fetchUsage(token, o.timeout)
+	for _, h := range responseHeaders(hdr) {
+		fmt.Fprintln(os.Stderr, h)
+	}
+	if err != nil {
+		return fmt.Errorf("%w (token from %s)", err, src)
+	}
+	_, err = os.Stdout.Write(pretty(body))
+	return err
 }
 
 // writeMetrics is the whole point of the tool: fetch, format, replace the file.
@@ -221,7 +289,15 @@ func writeMetrics(o options) error {
 	return writeAtomic(o.out, enc)
 }
 
+// encodeCard fetches and encodes the card for the provider in the options.
 func encodeCard(o options) ([]byte, error) {
+	if o.provider == "codex" {
+		return encodeCodexCard(o)
+	}
+	return encodeClaudeCard(o)
+}
+
+func encodeClaudeCard(o options) ([]byte, error) {
 	token, src, err := findToken()
 	if err != nil {
 		return nil, err
@@ -255,6 +331,47 @@ func encodeCard(o options) ([]byte, error) {
 	return append(enc, '\n'), nil
 }
 
+// encodeCodexCard fetches both codex endpoints and encodes the card. The
+// windows decide whether the card is written; the reset count is a sidecar —
+// if only it fails, the card still goes out without the Resets row.
+func encodeCodexCard(o options) ([]byte, error) {
+	token, accountID, src, err := findCodexToken()
+	if err != nil {
+		return nil, err
+	}
+	body, _, err := codexGet(codexUsageURL, token, accountID, o.timeout)
+	if err != nil {
+		var rl *rateLimitError
+		if errors.As(err, &rl) {
+			st := loadState(o.out)
+			st.Strikes++
+			st.BackoffUntil = time.Now().Add(rl.RetryAfter)
+			saveState(o.out, st)
+		}
+		return nil, fmt.Errorf("%w (token from %s)", err, src)
+	}
+	st := loadState(o.out)
+	st.clearBackoff()
+	saveState(o.out, st)
+	var u codexUsage
+	if err := json.Unmarshal(body, &u); err != nil {
+		return nil, fmt.Errorf("parsing codex usage response: %w", err)
+	}
+	if len(u.rows()) == 0 {
+		return nil, errors.New("codex usage response carried no limit windows (run with -raw to inspect)")
+	}
+	resets, rerr := fetchCodexResets(token, accountID, o.timeout)
+	if rerr != nil {
+		// The windows are still worth writing; say why the row is gone.
+		fmt.Fprintf(os.Stderr, "ninelives: dropping the Resets row: %v\n", rerr)
+	}
+	enc, err := json.MarshalIndent(buildCodexCard(u, resets, o, time.Now()), "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(enc, '\n'), nil
+}
+
 // noteNewWindows announces an allowance the card does not know about, once,
 // the first time the API mentions it. A temporary capacity grant would arrive
 // this way, and going unnoticed is the failure worth avoiding.
@@ -273,24 +390,32 @@ func noteNewWindows(o options, u usage) {
 }
 
 func usageText(w *os.File) {
-	fmt.Fprint(w, `ninelives — how much Claude allowance is left, in the RunCat Neo menu bar
+	fmt.Fprint(w, `ninelives — how much Claude and Codex allowance is left, in the RunCat Neo menu bar
 
 usage:
-  ninelives [flags]              fetch once and write the metrics file
+  ninelives [flags]              fetch Claude usage once and write the metrics file
+  ninelives codex [flags]        same, for OpenAI Codex (a separate card)
   ninelives install [flags]      install a launchd agent that refreshes it
+  ninelives codex install [flags]
   ninelives uninstall            unload the agent and remove what it wrote
+  ninelives codex uninstall
   ninelives status               show the agent and the last written card
+  ninelives codex status
   ninelives version
+
+The claude/codex prefix picks which card a command works on; it defaults to
+claude. Codex only changes the defaults of -out, -title and -symbol.
 
 flags (all subcommands):
   -out PATH        metrics file RunCat Neo reads
-                   (default ~/.config/runcat-neo-metrics/claude.json)
+                    claude: ~/.config/runcat-neo-metrics/claude.json
+                    codex:  ~/.config/runcat-neo-metrics/codex.json
   -lives           show "6/9" instead of "65%"
   -extra           also show allowance windows the tool does not recognise
-  -credits         also show extra-usage credits spent
+  -credits         also show extra-usage credits spent (claude)
   -bar 5h|7d|min   which window drives the menu bar value (default 5h)
-  -title NAME      card title (default Claude)
-  -symbol NAME     SF Symbol for the card (default staroflife)
+  -title NAME      card title (claude: Claude, codex: Codex)
+  -symbol NAME     SF Symbol for the card (claude: staroflife, codex: bolt)
   -timeout D       HTTP timeout (default 15s)
 
 run only:
@@ -308,6 +433,7 @@ uninstall only:
 examples:
   ninelives -stdout
   ninelives install -lives -bar min
+  ninelives codex install
   ninelives status
 `)
 }

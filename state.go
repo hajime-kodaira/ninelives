@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -50,9 +51,17 @@ func (s *state) noteWindows(names []string) []string {
 }
 
 // statePath keeps the state beside the metrics file. The leading dot keeps it
-// out of the way of RunCat's file picker.
+// out of the way of RunCat's file picker. claude.json keeps the legacy name so
+// existing installs keep their backoff record; any other metrics file gets a
+// state of its own, so a Claude card and a Codex card sharing one directory
+// do not fight over a single backoff.
 func statePath(out string) string {
-	return filepath.Join(filepath.Dir(out), ".ninelives-state.json")
+	dir := filepath.Dir(out)
+	base := filepath.Base(out)
+	if base == "claude.json" {
+		return filepath.Join(dir, ".ninelives-state.json")
+	}
+	return filepath.Join(dir, ".ninelives-"+strings.TrimSuffix(base, ".json")+"-state.json")
 }
 
 func loadState(out string) state {

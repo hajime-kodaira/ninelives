@@ -10,7 +10,7 @@ import (
 
 func TestPlistXMLEscapesPaths(t *testing.T) {
 	// A path with & and < is legal on macOS and would otherwise break the XML.
-	got := string(plistXML([]string{"/Users/a&b/bin/ninelives", "-out", "/tmp/<x>.json"}, "/tmp/log", 300))
+	got := string(plistXML("io.local.ninelives", []string{"/Users/a&b/bin/ninelives", "-out", "/tmp/<x>.json"}, "/tmp/log", 300))
 
 	for _, want := range []string{
 		"<string>io.local.ninelives</string>",
@@ -34,7 +34,7 @@ func TestAgentArgsOnlyCarriesExplicitFlags(t *testing.T) {
 	parse := func(args ...string) []string {
 		fs := flag.NewFlagSet("test", flag.ContinueOnError)
 		var o options
-		o.bind(fs, "install")
+		o.bind(fs, "install", "claude")
 		if err := fs.Parse(args); err != nil {
 			t.Fatal(err)
 		}
@@ -61,20 +61,29 @@ func TestAgentArgsOnlyCarriesExplicitFlags(t *testing.T) {
 // below 60s every run past the fifth is throttled.
 func TestValidateInterval(t *testing.T) {
 	for _, n := range []int{59, 30, 1, 0, -5} {
-		if err := validateInterval(n); err == nil {
-			t.Errorf("-interval %d was accepted", n)
+		for _, prov := range []string{"claude", "codex"} {
+			if err := validateInterval(n, prov); err == nil {
+				t.Errorf("-interval %d (%s) was accepted", n, prov)
+			}
 		}
 	}
 	for _, n := range []int{60, 120, 300, 3600} {
-		if err := validateInterval(n); err != nil {
+		if err := validateInterval(n, "claude"); err != nil {
 			t.Errorf("-interval %d rejected: %v", n, err)
 		}
 	}
-	if intervalNote(300) != "" || intervalNote(defaultInterval) != "" {
+	// The measured-budget rationale is a Claude fact; codex just gets the floor.
+	if err := validateInterval(59, "codex"); err == nil || strings.Contains(err.Error(), "5 requests") {
+		t.Errorf("codex floor error = %v", err)
+	}
+	if intervalNote(300, "claude") != "" || intervalNote(defaultInterval, "claude") != "" {
 		t.Error("no note expected at or above the default interval")
 	}
-	if !strings.Contains(intervalNote(60), "5 of the 5 requests") {
-		t.Errorf("note at the floor = %q", intervalNote(60))
+	if intervalNote(60, "codex") != "" {
+		t.Error("the budget note is a Claude fact and must not appear for codex")
+	}
+	if !strings.Contains(intervalNote(60, "claude"), "5 of the 5 requests") {
+		t.Errorf("note at the floor = %q", intervalNote(60, "claude"))
 	}
 }
 
