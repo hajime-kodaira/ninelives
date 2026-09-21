@@ -8,6 +8,7 @@ package main
 // the account id in ChatGPT-Account-Id.
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -77,7 +79,8 @@ func windowLabel(secs int64) (label, key string) {
 		return "window", ""
 	case d < time.Hour:
 		return strconv.Itoa(int(d/time.Minute)) + "m", ""
-	case d < 24*time.Hour:
+	case d%(24*time.Hour) != 0:
+		// 36h stays "36h": integer division would round it to a wrong "1d".
 		return strconv.Itoa(int(d/time.Hour)) + "h", ""
 	default:
 		return strconv.Itoa(int(d/(24*time.Hour))) + "d", ""
@@ -98,7 +101,9 @@ func (u codexUsage) rows() []row {
 			}
 			label, key := windowLabel(w.LimitWindowSeconds)
 			if prefix != "" {
-				key = "" // a "Review 5h" row must not hijack -bar 5h
+				// -bar 5h/7d must name the plain windows. -bar min still sees
+				// this row, exactly as Claude's min includes "7d Fable".
+				key = ""
 			}
 			out = append(out, row{
 				label:  prefix + label,
@@ -115,12 +120,13 @@ func (u codexUsage) rows() []row {
 
 // --- credentials -------------------------------------------------------
 
-// codexAuth is ~/.codex/auth.json, trimmed to the two fields the endpoints
-// need. Codex CLI refreshes this file itself; this tool only reads it.
+// codexAuth is ~/.codex/auth.json, trimmed to the fields the endpoints need.
+// Codex CLI refreshes this file itself; this tool only reads it.
 type codexAuth struct {
 	Tokens struct {
 		AccessToken string `json:"access_token"`
 		AccountID   string `json:"account_id"`
+		IDToken     string `json:"id_token"`
 	} `json:"tokens"`
 }
 
@@ -137,16 +143,45 @@ func findCodexToken() (token, accountID, source string, err error) {
 	path := filepath.Join(codexHome(), "auth.json")
 	blob, err := os.ReadFile(path)
 	if err != nil {
-		return "", "", "", fmt.Errorf("no Codex credentials found (checked %s; `codex login` creates them)", path)
+		return "", "", "", fmt.Errorf("no Codex credentials found (checked %s; `codex login` creates them — setups that store credentials in the Keychain carry no auth.json)", path)
 	}
 	var a codexAuth
 	if err := json.Unmarshal(blob, &a); err != nil {
 		return "", "", "", fmt.Errorf("reading %s: %w", path, err)
 	}
 	if a.Tokens.AccessToken == "" {
-		return "", "", "", fmt.Errorf("%s had no tokens.access_token", path)
+		return "", "", "", fmt.Errorf("%s had no ChatGPT tokens: an API-key login carries none — sign in with `codex login`", path)
 	}
-	return a.Tokens.AccessToken, a.Tokens.AccountID, path, nil
+	// Older logins predate the account_id field; the same value lives in the
+	// id_token's claims, so read it from there rather than going without.
+	id := a.Tokens.AccountID
+	if id == "" {
+		id = accountIDFromIDToken(a.Tokens.IDToken)
+	}
+	return a.Tokens.AccessToken, id, path, nil
+}
+
+// accountIDFromIDToken reads chatgpt_account_id out of the id_token's claims.
+// The token is not verified — Codex CLI already logged in with it, this only
+// mirrors what it sends — so any failure just means no account id.
+func accountIDFromIDToken(idToken string) string {
+	parts := strings.Split(idToken, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Auth struct {
+			AccountID string `json:"chatgpt_account_id"`
+		} `json:"https://api.openai.com/auth"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return claims.Auth.AccountID
 }
 
 // --- fetching ----------------------------------------------------------

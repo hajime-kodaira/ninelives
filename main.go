@@ -134,22 +134,7 @@ func (o *options) bind(fs *flag.FlagSet, sub, provider string) {
 }
 
 func main() {
-	// A provider prefix (claude, codex) selects which card a command works on.
-	// It is optional and defaults to claude, so every existing invocation keeps
-	// behaving exactly as before.
-	prov := "claude"
-	sub, args := "run", os.Args[1:]
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		switch args[0] {
-		case "claude", "codex":
-			prov, args = args[0], args[1:]
-			if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-				sub, args = args[0], args[1:]
-			}
-		default:
-			sub, args = args[0], args[1:]
-		}
-	}
+	prov, sub, args := splitCommand(os.Args[1:])
 
 	switch sub {
 	case "help", "-h", "--help":
@@ -176,6 +161,27 @@ func main() {
 		fmt.Fprintln(os.Stderr, "ninelives: "+err.Error())
 		os.Exit(1)
 	}
+}
+
+// splitCommand reads an optional provider prefix (claude, codex) and then the
+// subcommand off the front of argv. The prefix defaults to claude, so every
+// existing invocation keeps meaning exactly what it meant before. It is a
+// function of its own so the parsing can be tested without running main.
+func splitCommand(argv []string) (provider, sub string, args []string) {
+	provider, sub, args = "claude", "run", argv
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return provider, sub, args
+	}
+	switch args[0] {
+	case "claude", "codex":
+		provider, args = args[0], args[1:]
+		if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+			sub, args = args[0], args[1:]
+		}
+	default:
+		sub, args = args[0], args[1:]
+	}
+	return provider, sub, args
 }
 
 func dispatch(sub string, o options, fs *flag.FlagSet) error {
@@ -237,23 +243,31 @@ func runOnce(o options) error {
 	return writeMetrics(o)
 }
 
-// printRaw dumps the provider's usage endpoint to stdout, headers to stderr,
+// printRaw dumps the provider's usage endpoints to stdout, headers to stderr,
 // so an undocumented endpoint changing shape can be inspected without curl.
+// Codex prints both endpoints it reads: the reset-credit count is the very
+// thing whose disagreement with wham/usage made a second endpoint necessary,
+// so -raw has to be able to see it too.
 func printRaw(o options) error {
 	if o.provider == "codex" {
 		token, accountID, src, err := findCodexToken()
 		if err != nil {
 			return err
 		}
-		body, hdr, err := codexGet(codexUsageURL, token, accountID, o.timeout)
-		for _, h := range responseHeaders(hdr) {
-			fmt.Fprintln(os.Stderr, h)
+		for _, url := range []string{codexUsageURL, codexResetCreditsURL} {
+			fmt.Fprintln(os.Stderr, "GET "+url)
+			body, hdr, err := codexGet(url, token, accountID, o.timeout)
+			for _, h := range responseHeaders(hdr) {
+				fmt.Fprintln(os.Stderr, h)
+			}
+			if err != nil {
+				return fmt.Errorf("%w (token from %s)", err, src)
+			}
+			if _, err := os.Stdout.Write(pretty(body)); err != nil {
+				return err
+			}
 		}
-		if err != nil {
-			return fmt.Errorf("%w (token from %s)", err, src)
-		}
-		_, err = os.Stdout.Write(pretty(body))
-		return err
+		return nil
 	}
 	token, src, err := findToken()
 	if err != nil {
@@ -278,7 +292,7 @@ func writeMetrics(o options) error {
 	// A recorded 429 means the server already told us when to come back. Skip
 	// the request rather than spending one of the window's few slots, and exit
 	// successfully so the log does not fill with the same complaint.
-	if d, ok := loadState(o.out).waiting(time.Now()); ok {
+	if d, ok := loadState(o).waiting(time.Now()); ok {
 		fmt.Fprintf(os.Stderr, "ninelives: rate limited, skipping for another %s\n", d)
 		return nil
 	}
@@ -306,16 +320,16 @@ func encodeClaudeCard(o options) ([]byte, error) {
 	if err != nil {
 		var rl *rateLimitError
 		if errors.As(err, &rl) {
-			st := loadState(o.out)
+			st := loadState(o)
 			st.Strikes++
 			st.BackoffUntil = time.Now().Add(rl.RetryAfter)
-			saveState(o.out, st)
+			saveState(o, st)
 		}
 		return nil, fmt.Errorf("%w (token from %s)", err, src)
 	}
-	st := loadState(o.out)
+	st := loadState(o)
 	st.clearBackoff()
-	saveState(o.out, st)
+	saveState(o, st)
 	var u usage
 	if err := json.Unmarshal(body, &u); err != nil {
 		return nil, fmt.Errorf("parsing usage response: %w", err)
@@ -343,16 +357,16 @@ func encodeCodexCard(o options) ([]byte, error) {
 	if err != nil {
 		var rl *rateLimitError
 		if errors.As(err, &rl) {
-			st := loadState(o.out)
+			st := loadState(o)
 			st.Strikes++
 			st.BackoffUntil = time.Now().Add(rl.RetryAfter)
-			saveState(o.out, st)
+			saveState(o, st)
 		}
 		return nil, fmt.Errorf("%w (token from %s)", err, src)
 	}
-	st := loadState(o.out)
+	st := loadState(o)
 	st.clearBackoff()
-	saveState(o.out, st)
+	saveState(o, st)
 	var u codexUsage
 	if err := json.Unmarshal(body, &u); err != nil {
 		return nil, fmt.Errorf("parsing codex usage response: %w", err)
@@ -360,11 +374,28 @@ func encodeCodexCard(o options) ([]byte, error) {
 	if len(u.rows()) == 0 {
 		return nil, errors.New("codex usage response carried no limit windows (run with -raw to inspect)")
 	}
+	// Reset credits are a sidecar: their absence costs the Resets row, not the
+	// card. But a 429 here means the usage endpoint would say the same next
+	// round, so record the backoff now instead of paying for the lesson twice.
 	resets, rerr := fetchCodexResets(token, accountID, o.timeout)
+	st = loadState(o)
 	if rerr != nil {
-		// The windows are still worth writing; say why the row is gone.
-		fmt.Fprintf(os.Stderr, "ninelives: dropping the Resets row: %v\n", rerr)
+		var rl *rateLimitError
+		if errors.As(rerr, &rl) {
+			st.Strikes++
+			st.BackoffUntil = time.Now().Add(rl.RetryAfter)
+		}
+		// Announce only when the reason changes: a plan without reset
+		// credits answers the same 404 forever, and one line per run would
+		// bury the log.
+		if note := rerr.Error(); st.ResetCreditsNote != note {
+			fmt.Fprintf(os.Stderr, "ninelives: dropping the Resets row: %v\n", rerr)
+			st.ResetCreditsNote = note
+		}
+	} else {
+		st.ResetCreditsNote = ""
 	}
+	saveState(o, st)
 	enc, err := json.MarshalIndent(buildCodexCard(u, resets, o, time.Now()), "", "  ")
 	if err != nil {
 		return nil, err
@@ -381,12 +412,12 @@ func noteNewWindows(o options, u usage) {
 	for _, r := range unknown {
 		names = append(names, r.label)
 	}
-	st := loadState(o.out)
+	st := loadState(o)
 	if added := st.noteWindows(names); len(added) > 0 && !o.extra {
 		fmt.Fprintf(os.Stderr, "ninelives: the API reported an allowance this card does not show: %s (add -extra)\n",
 			strings.Join(added, ", "))
 	}
-	saveState(o.out, st)
+	saveState(o, st)
 }
 
 func usageText(w *os.File) {
@@ -411,7 +442,7 @@ flags (all subcommands):
                     claude: ~/.config/runcat-neo-metrics/claude.json
                     codex:  ~/.config/runcat-neo-metrics/codex.json
   -lives           show "6/9" instead of "65%"
-  -extra           also show allowance windows the tool does not recognise
+  -extra           also show allowance windows the tool does not recognise (claude)
   -credits         also show extra-usage credits spent (claude)
   -bar 5h|7d|min   which window drives the menu bar value (default 5h)
   -title NAME      card title (claude: Claude, codex: Codex)

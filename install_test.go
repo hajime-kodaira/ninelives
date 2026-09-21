@@ -28,6 +28,39 @@ func TestPlistXMLEscapesPaths(t *testing.T) {
 	}
 }
 
+// The claude plist has a shape users already have installed; compare the whole
+// document to the exact bytes the tool has been producing, so a change to the
+// generator cannot slip in unnoticed.
+func TestClaudePlistGolden(t *testing.T) {
+	got := string(plistXML("io.local.ninelives",
+		[]string{"/Users/you/bin/ninelives", "-out", "/Users/you/.config/runcat-neo-metrics/claude.json"},
+		"/Users/you/Library/Logs/ninelives.log", 120))
+	want := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>io.local.ninelives</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/you/bin/ninelives</string>
+		<string>-out</string>
+		<string>/Users/you/.config/runcat-neo-metrics/claude.json</string>
+	</array>
+	<key>StartInterval</key>
+	<integer>120</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/you/Library/Logs/ninelives.log</string>
+</dict>
+</plist>
+`
+	if got != want {
+		t.Errorf("claude plist changed:\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 // agentArgs must replay what the user typed and nothing else, or `install`
 // would bake defaults into the plist and drift from the flag definitions.
 func TestAgentArgsOnlyCarriesExplicitFlags(t *testing.T) {

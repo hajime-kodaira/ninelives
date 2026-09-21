@@ -1,8 +1,13 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -102,6 +107,9 @@ func TestCodexWindowLabelFallback(t *testing.T) {
 		{172800, "2d", ""},
 		{2592000, "30d", ""},
 		{2700, "45m", ""},
+		// Not whole days: integer division would round both to a wrong "1d".
+		{90000, "25h", ""},
+		{129600, "36h", ""},
 		{0, "window", ""},
 	} {
 		if label, key := windowLabel(c.secs); label != c.label || key != c.key {
@@ -182,15 +190,104 @@ func TestBuildCodexCard(t *testing.T) {
 	}
 }
 
-// The two cards share one directory, so their backoff records must not share
-// one file: a codex 429 would otherwise silence the claude agent too.
+// The state file is keyed by provider, not by the -out file: an existing
+// claude install pointed at a custom file keeps the state it already has,
+// and the two cards sharing one directory do not fight over one backoff —
+// a codex 429 would otherwise silence the claude agent too.
 func TestStatePathPerProvider(t *testing.T) {
 	dir := t.TempDir()
-	if got := statePath(filepath.Join(dir, "claude.json")); got != filepath.Join(dir, ".ninelives-state.json") {
-		t.Errorf("claude state = %q, want the legacy name", got)
+	for _, out := range []string{"claude.json", "claude-work.json"} {
+		if got := statePath(options{provider: "claude", out: filepath.Join(dir, out)}); got != filepath.Join(dir, ".ninelives-state.json") {
+			t.Errorf("claude state for %s = %q, want the legacy name", out, got)
+		}
 	}
-	if got := statePath(filepath.Join(dir, "codex.json")); got != filepath.Join(dir, ".ninelives-codex-state.json") {
+	if got := statePath(options{provider: "codex", out: filepath.Join(dir, "codex.json")}); got != filepath.Join(dir, ".ninelives-codex-state.json") {
 		t.Errorf("codex state = %q, want a per-card name", got)
+	}
+}
+
+// The provider prefix and the subcommand both come off the front of argv, so
+// every historical invocation (no prefix) must keep parsing identically.
+func TestSplitCommand(t *testing.T) {
+	for _, c := range []struct {
+		argv          []string
+		provider, sub string
+		args          []string
+	}{
+		{[]string{}, "claude", "run", []string{}},
+		{[]string{"-stdout"}, "claude", "run", []string{"-stdout"}},
+		{[]string{"install"}, "claude", "install", []string{}},
+		{[]string{"codex"}, "codex", "run", []string{}},
+		{[]string{"codex", "-stdout"}, "codex", "run", []string{"-stdout"}},
+		{[]string{"codex", "install", "-lives"}, "codex", "install", []string{"-lives"}},
+		{[]string{"claude", "status"}, "claude", "status", []string{}},
+		{[]string{"help"}, "claude", "help", []string{}},
+	} {
+		provider, sub, args := splitCommand(c.argv)
+		if provider != c.provider || sub != c.sub || len(args) != len(c.args) {
+			t.Errorf("splitCommand(%v) = %q/%q/%v, want %q/%q/%v", c.argv, provider, sub, args, c.provider, c.sub, c.args)
+			continue
+		}
+		for i := range args {
+			if args[i] != c.args[i] {
+				t.Errorf("splitCommand(%v) args = %v, want %v", c.argv, args, c.args)
+			}
+		}
+	}
+}
+
+// codexGet is the only code path talking to a new host, so its statuses get a
+// test rather than a live-only smoke: the headers it must send, the 401 copy,
+// and the 429 that feeds the backoff machinery.
+func TestCodexGetSendsHeadersAndHandlesStatuses(t *testing.T) {
+	var gotAuth, gotAccount string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth, gotAccount = r.Header.Get("Authorization"), r.Header.Get("ChatGPT-Account-Id")
+		switch r.URL.Path {
+		case "/ok":
+			_, _ = w.Write([]byte(`{"available_count":1}`))
+		case "/expired":
+			w.WriteHeader(http.StatusUnauthorized)
+		case "/limited":
+			w.Header().Set("Retry-After", "300")
+			w.WriteHeader(http.StatusTooManyRequests)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	body, _, err := codexGet(srv.URL+"/ok", "tok", "acc", time.Second)
+	if err != nil || string(body) != `{"available_count":1}` {
+		t.Fatalf("200 path = %q, %v", body, err)
+	}
+	if gotAuth != "Bearer tok" || gotAccount != "acc" {
+		t.Errorf("headers = %q / %q, want Bearer tok / acc", gotAuth, gotAccount)
+	}
+
+	_, _, err = codexGet(srv.URL+"/expired", "tok", "acc", time.Second)
+	if err == nil || !strings.Contains(err.Error(), "start `codex` once") {
+		t.Errorf("401 error = %v", err)
+	}
+
+	_, _, err = codexGet(srv.URL+"/limited", "tok", "acc", time.Second)
+	var rl *rateLimitError
+	if !errors.As(err, &rl) || rl.RetryAfter != 300*time.Second {
+		t.Errorf("429 error = %v, want a rateLimitError of 5m", err)
+	}
+}
+
+// Older logins carry no account_id; the same value lives in the id_token's
+// claims. Any garbage just means no account id, which is not fatal.
+func TestAccountIDFromIDToken(t *testing.T) {
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"https://api.openai.com/auth":{"chatgpt_account_id":"acc-123"}}`))
+	if got := accountIDFromIDToken("e30." + payload + ".c2ln"); got != "acc-123" {
+		t.Errorf("accountIDFromIDToken = %q, want acc-123", got)
+	}
+	for _, bad := range []string{"", "not-a-jwt", "e30.c2ln", "e30.!!!.c2ln"} {
+		if got := accountIDFromIDToken(bad); got != "" {
+			t.Errorf("accountIDFromIDToken(%q) = %q, want empty", bad, got)
+		}
 	}
 }
 

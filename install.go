@@ -120,9 +120,9 @@ func installAgent(o options, extraArgs []string) error {
 		return err
 	}
 
-	st := loadState(o.out)
+	st := loadState(o)
 	st.AgentVersion = versionString()
-	saveState(o.out, st)
+	saveState(o, st)
 
 	fmt.Println("==> loading the launchd agent")
 	// bootout first so a re-run replaces the previous registration.
@@ -318,7 +318,7 @@ func uninstallAgent(o options, keepData bool) error {
 		}
 	}
 	if !keepData {
-		for _, p := range []string{o.out, statePath(o.out)} {
+		for _, p := range []string{o.out, statePath(o)} {
 			if err := os.Remove(p); err == nil {
 				fmt.Printf("==> removed %s\n", p)
 			} else if !os.IsNotExist(err) {
@@ -333,14 +333,14 @@ func uninstallAgent(o options, keepData bool) error {
 // --- status ------------------------------------------------------------
 
 func showStatus(o options) error {
-	st := loadState(o.out)
+	st := loadState(o)
 
 	fmt.Printf("agent    %s\n", agentState(o))
 	fmt.Printf("plist    %s\n", exists(plistPath(o)))
 	reportBinaries(st, o)
 	fmt.Printf("log      %s\n", exists(logPath(o)))
 	fmt.Printf("metrics  %s\n", o.out)
-	fmt.Printf("backoff  %s\n", loadState(o.out).describe(time.Now()))
+	fmt.Printf("backoff  %s\n", loadState(o).describe(time.Now()))
 
 	data, err := os.ReadFile(o.out)
 	if err != nil {

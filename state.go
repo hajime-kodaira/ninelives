@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -26,6 +25,10 @@ type state struct {
 	// binary is enough to update, but a plist written by an older version can
 	// be missing keys a newer one expects, and nothing else would say so.
 	AgentVersion string `json:"agentVersion,omitempty"`
+	// ResetCreditsNote records the last reset-credit sidecar failure, so a
+	// permanent one (a plan without reset credits answers the same 404
+	// forever) is announced once instead of once per run.
+	ResetCreditsNote string `json:"resetCreditsNote,omitempty"`
 }
 
 func (s *state) clearBackoff() {
@@ -51,22 +54,22 @@ func (s *state) noteWindows(names []string) []string {
 }
 
 // statePath keeps the state beside the metrics file. The leading dot keeps it
-// out of the way of RunCat's file picker. claude.json keeps the legacy name so
-// existing installs keep their backoff record; any other metrics file gets a
-// state of its own, so a Claude card and a Codex card sharing one directory
-// do not fight over a single backoff.
-func statePath(out string) string {
-	dir := filepath.Dir(out)
-	base := filepath.Base(out)
-	if base == "claude.json" {
-		return filepath.Join(dir, ".ninelives-state.json")
+// out of the way of RunCat's file picker. The name is keyed by provider, not
+// by the -out file: the claude card keeps its historical name whatever -out
+// says (so an existing install pointed at a custom file keeps its backoff
+// record), and the codex card gets one of its own, so two cards sharing a
+// directory do not fight over a single backoff.
+func statePath(o options) string {
+	name := ".ninelives-state.json"
+	if o.provider == "codex" {
+		name = ".ninelives-codex-state.json"
 	}
-	return filepath.Join(dir, ".ninelives-"+strings.TrimSuffix(base, ".json")+"-state.json")
+	return filepath.Join(filepath.Dir(o.out), name)
 }
 
-func loadState(out string) state {
+func loadState(o options) state {
 	var s state
-	data, err := os.ReadFile(statePath(out))
+	data, err := os.ReadFile(statePath(o))
 	if err != nil {
 		return s
 	}
@@ -74,17 +77,17 @@ func loadState(out string) state {
 	return s
 }
 
-func saveState(out string, s state) {
+func saveState(o options, s state) {
 	data, err := json.Marshal(s)
 	if err != nil {
 		return
 	}
 	// Best effort: failing to record a backoff must not fail the run.
-	_ = writeAtomic(statePath(out), append(data, '\n'))
+	_ = writeAtomic(statePath(o), append(data, '\n'))
 }
 
-func clearState(out string) {
-	_ = os.Remove(statePath(out))
+func clearState(o options) {
+	_ = os.Remove(statePath(o))
 }
 
 // waiting reports how long is left on a recorded backoff, if any.
