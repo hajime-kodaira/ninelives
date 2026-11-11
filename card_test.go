@@ -224,15 +224,86 @@ func TestNewWindowsAreAnnouncedOnce(t *testing.T) {
 func TestBrokenExtraUsageDoesNotBreakTheCard(t *testing.T) {
 	var u usage
 	body := `{"limits":[{"kind":"session","percent":51,"resets_at":"2026-08-31T16:19:59+00:00"}],
-	          "extra_usage":{"used_credits":"lots","is_enabled":true}}`
+	          "extra_usage":{"used_credits":"lots","is_enabled":true},
+	          "cedar_ember":{"eligible":"yes","grants":"many"}}`
 	if err := json.Unmarshal([]byte(body), &u); err != nil {
-		t.Fatalf("a broken extra_usage failed the whole parse: %v", err)
+		t.Fatalf("a broken optional block failed the whole parse: %v", err)
 	}
 	if u.ExtraUsage != nil {
 		t.Error("a broken extra_usage should be dropped, not half-decoded")
 	}
+	if u.CedarEmber != nil {
+		t.Error("a broken cedar_ember should be dropped, not half-decoded")
+	}
 	if len(u.rows()) != 1 {
 		t.Errorf("the plan windows were lost: %+v", u.rows())
+	}
+}
+
+// The cedar_ember block returned by ?cedar_ember=1 on a Max account, trimmed to
+// the fields the card reads. One full reset expires in December; three Fable
+// resets (type is "full" on the wire, distinguished by gives_back_weekly)
+// expire in March.
+const sampleCedarEmberPayload = `{
+  "limits": [
+    {"kind":"session","group":"session","percent":2,"resets_at":"2026-11-11T17:29:59+00:00"},
+    {"kind":"weekly_all","group":"weekly","percent":2,"resets_at":"2026-11-12T10:59:59+00:00"}
+  ],
+  "cedar_ember": {
+    "eligible": true,
+    "grants": [
+      {"id":"full-reset-2611","resets_left":1,"ends_at":"2026-12-10T22:00:00+00:00","clears":["five_hour","seven_day","seven_day_overage_included"],"paused":false,"type":"full","gives_back_weekly":false},
+      {"id":"launch-2610-fable","resets_left":1,"ends_at":"2027-03-09T07:59:00+00:00","clears":["five_hour","seven_day_overage_included"],"paused":false,"type":"full","gives_back_weekly":true},
+      {"id":"launch-2610-fable-12mo","resets_left":1,"ends_at":"2027-03-09T07:59:00+00:00","clears":["five_hour","seven_day_overage_included"],"paused":false,"type":"full","gives_back_weekly":true},
+      {"id":"launch-2610-fable-6mo","resets_left":1,"ends_at":"2027-03-09T07:59:00+00:00","clears":["five_hour","seven_day_overage_included"],"paused":false,"type":"full","gives_back_weekly":true}
+    ]
+  }
+}`
+
+func TestCedarEmberResetsRow(t *testing.T) {
+	var u usage
+	if err := json.Unmarshal([]byte(sampleCedarEmberPayload), &u); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 11, 15, 0, 0, 0, time.UTC)
+	c := buildCard(u, options{title: "Claude", symbol: "staroflife", bar: "5h"}, now)
+
+	if len(c.Metrics) != 3 {
+		t.Fatalf("got %d rows, want 3: %+v", len(c.Metrics), c.Metrics)
+	}
+	resets := c.Metrics[2]
+	if resets.Title != "Resets" || resets.FormattedValue != "1 full, 3 Fable · 29d7h" {
+		t.Errorf("Resets row = %q/%q, want Resets/\"1 full, 3 Fable · 29d7h\"", resets.Title, resets.FormattedValue)
+	}
+	if resets.NormalizedValue != nil {
+		t.Error("Resets is a count, so the row must not draw a bar")
+	}
+	// cedar_ember must not be reported as an unknown allowance window.
+	if unknown := u.unknownWindows(); len(unknown) != 0 {
+		t.Errorf("unknownWindows = %+v, want none", unknown)
+	}
+}
+
+func TestCedarEmberFilteringAndFallbackKinds(t *testing.T) {
+	now := time.Date(2026, 11, 11, 15, 0, 0, 0, time.UTC)
+	ce := &cedarEmber{
+		Eligible: true,
+		Grants: []resetGrant{
+			{Type: "full", ResetsLeft: 0, EndsAt: resetTime{now.Add(24 * time.Hour)}},          // spent
+			{Type: "full", ResetsLeft: 1, Paused: true, EndsAt: resetTime{now.Add(time.Hour)}}, // paused
+			{Type: "full", ResetsLeft: 1, EndsAt: resetTime{now.Add(-time.Minute)}},            // expired
+			{Type: "session", ResetsLeft: 1, EndsAt: resetTime{now.Add(50 * time.Hour)}},
+			{Type: "", Clears: []string{"seven_day"}, ResetsLeft: 2, EndsAt: resetTime{now.Add(10 * time.Hour)}},
+		},
+	}
+	if got, want := ce.summary(now), "1 5h, 2 weekly · 10h00m"; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+
+	// Once all grants are spent or ineligible, the row disappears.
+	ce.Eligible = false
+	if got := ce.summary(now); got != "" {
+		t.Errorf("ineligible summary = %q, want empty", got)
 	}
 }
 

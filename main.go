@@ -2,11 +2,11 @@
 // it as a RunCat Neo custom metrics card. `ninelives codex` does the same for
 // OpenAI Codex, as a separate card and a separate launchd agent.
 //
-// Claude data source: GET https://api.anthropic.com/api/oauth/usage — the
-// endpoint Claude Code's /usage command calls. It is undocumented and may
-// change without notice. Authentication reuses the OAuth token Claude Code
-// already stores (macOS Keychain "Claude Code-credentials", or
-// ~/.claude/.credentials.json).
+// Claude data source: GET https://api.anthropic.com/api/oauth/usage?cedar_ember=1 —
+// the endpoint Claude Code's /usage and /limit-reset commands call. It is
+// undocumented and may change without notice. Authentication reuses the OAuth
+// token Claude Code already stores (macOS Keychain "Claude Code-credentials",
+// or ~/.claude/.credentials.json).
 //
 // Codex data source: GET https://chatgpt.com/backend-api/wham/usage and
 // GET .../wham/rate-limit-reset-credits — the endpoints the Codex CLI polls

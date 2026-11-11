@@ -19,10 +19,13 @@ import (
 )
 
 const (
-	usageURL      = "https://api.anthropic.com/api/oauth/usage"
+	usageURL      = "https://api.anthropic.com/api/oauth/usage?cedar_ember=1"
 	anthropicBeta = "oauth-2025-04-20"
 	anthropicVers = "2023-06-01"
-	keychainSvc   = "Claude Code-credentials"
+	// The usage endpoint gates cedar_ember on the Claude Code CLI User-Agent;
+	// anything else comes back with ineligible_reason: "surface" and no grants.
+	claudeUA    = "claude-cli/2.1.322 (external, cli)"
+	keychainSvc = "Claude Code-credentials"
 )
 
 // --- response shape ----------------------------------------------------
@@ -53,10 +56,11 @@ type usage struct {
 	SevenDayOpus *window `json:"seven_day_opus"`
 	Limits       []limit `json:"limits"`
 
-	// Decoded separately from raw, never as part of the main struct: it is a
-	// cosmetic extra, and a surprise in its shape must not cost us the card.
+	// Decoded separately from raw, never as part of the main struct: cosmetic
+	// extras whose shape may drift must not cost us the card.
 	// used_credits arrives as 735.0, which an int field would reject outright.
 	ExtraUsage *extraUsage `json:"-"`
+	CedarEmber *cedarEmber `json:"-"`
 
 	// raw keeps every top-level key so unrecognised allowances can still be
 	// found. The account carries a row of codenamed nulls — omelette_promotional,
@@ -70,7 +74,7 @@ type usage struct {
 // else is a candidate allowance.
 var knownKeys = map[string]bool{
 	"five_hour": true, "seven_day": true, "seven_day_opus": true,
-	"limits": true, "extra_usage": true, "spend": true,
+	"limits": true, "extra_usage": true, "cedar_ember": true, "spend": true,
 	"member_dashboard_available": true,
 }
 
@@ -88,6 +92,12 @@ func (u *usage) UnmarshalJSON(b []byte) error {
 		var e extraUsage
 		if err := json.Unmarshal(body, &e); err == nil {
 			u.ExtraUsage = &e
+		}
+	}
+	if body, ok := u.raw["cedar_ember"]; ok {
+		var c cedarEmber
+		if err := json.Unmarshal(body, &c); err == nil {
+			u.CedarEmber = &c
 		}
 	}
 	return nil
@@ -147,6 +157,100 @@ func (e extraUsage) spent() string {
 		symbol = e.Currency + " "
 	}
 	return fmt.Sprintf("%s%.*f", symbol, places, amount)
+}
+
+// cedarEmber is the temporary limit-reset grant block returned when the usage
+// endpoint is asked with ?cedar_ember=1 (Claude Code's /limit-reset).
+type cedarEmber struct {
+	Eligible bool         `json:"eligible"`
+	Grants   []resetGrant `json:"grants"`
+}
+
+type resetGrant struct {
+	Type            string    `json:"type"`
+	ResetsLeft      float64   `json:"resets_left"`
+	EndsAt          resetTime `json:"ends_at"`
+	Clears          []string  `json:"clears"`
+	Paused          bool      `json:"paused"`
+	GivesBackWeekly bool      `json:"gives_back_weekly"`
+}
+
+// kind names a reset grant the same way Claude Code's /limit-reset does: a
+// grant that gives back weekly share is a Fable reset even when its type says
+// "full", and a missing type falls back to which windows it clears.
+func (g resetGrant) kind() string {
+	if g.GivesBackWeekly {
+		return "Fable"
+	}
+	switch g.Type {
+	case "session":
+		return "5h"
+	case "weekly", "full":
+		return g.Type
+	case "":
+		var fiveHour, other bool
+		for _, c := range g.Clears {
+			if c == "five_hour" {
+				fiveHour = true
+			} else {
+				other = true
+			}
+		}
+		switch {
+		case fiveHour && !other:
+			return "5h"
+		case other && !fiveHour:
+			return "weekly"
+		default:
+			return "full"
+		}
+	default:
+		return g.Type
+	}
+}
+
+// summary formats the remaining reset grants as "1 full, 3 Fable · 29d4h",
+// using the earliest expiry among active grants. It returns "" when the
+// account is ineligible or no usable resets remain, so the card drops the row.
+func (c *cedarEmber) summary(now time.Time) string {
+	if c == nil || !c.Eligible {
+		return ""
+	}
+	type bucket struct {
+		kind  string
+		count int
+	}
+	var buckets []bucket
+	idx := map[string]int{}
+	var earliest time.Time
+
+	for _, g := range c.Grants {
+		n := int(g.ResetsLeft)
+		if g.Paused || n <= 0 {
+			continue
+		}
+		if !g.EndsAt.IsZero() && !now.Before(g.EndsAt.Time) {
+			continue
+		}
+		k := g.kind()
+		if i, ok := idx[k]; ok {
+			buckets[i].count += n
+		} else {
+			idx[k] = len(buckets)
+			buckets = append(buckets, bucket{kind: k, count: n})
+		}
+		if !g.EndsAt.IsZero() && (earliest.IsZero() || g.EndsAt.Before(earliest)) {
+			earliest = g.EndsAt.Time
+		}
+	}
+	if len(buckets) == 0 {
+		return ""
+	}
+	parts := make([]string, len(buckets))
+	for i, b := range buckets {
+		parts[i] = fmt.Sprintf("%d %s", b.count, b.kind)
+	}
+	return strings.Join(parts, ", ") + until(now, earliest)
 }
 
 // resetTime accepts either an RFC3339 string or a Unix timestamp, since the
@@ -237,7 +341,7 @@ func fetchUsage(token string, timeout time.Duration) ([]byte, http.Header, error
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", anthropicBeta)
 	req.Header.Set("anthropic-version", anthropicVers)
-	req.Header.Set("User-Agent", "ninelives/"+versionString())
+	req.Header.Set("User-Agent", claudeUA)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := (&http.Client{Timeout: timeout}).Do(req)

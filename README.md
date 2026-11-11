@@ -9,6 +9,7 @@ Claude と OpenAI Codex CLI の**残り使用率**を [RunCat Neo](https://kyome
 │ 5h        57% left · 1h36m  ████████░░░░░ │
 │ 7d        93% left · 3d18h  ████████████░ │
 │ 7d Fable  89% left · 3d18h  ████████████░ │
+│ Resets    1 full, 3 Fable · 29d6h         │
 └───────────────────────────────────────────┘
 
 ⚡ 97%      ← メニューバー（Codex）
@@ -24,7 +25,7 @@ Claude と OpenAI Codex CLI の**残り使用率**を [RunCat Neo](https://kyome
 
 ## 何をしているか
 
-Claude Code の `/usage` が内部で叩いているエンドポイント `GET https://api.anthropic.com/api/oauth/usage` から、5時間 / 週間 / モデル別週間の消費率を取り、RunCat Neo のカスタムメトリクス形式の JSON に書き出します。RunCat 側はそのファイルをファイルシステムイベントで監視していて、書き換わった瞬間にカードを更新します（ポーリングもネットワークアクセスもなし）。
+Claude Code の `/usage` と `/limit-reset` が内部で叩いているエンドポイント `GET https://api.anthropic.com/api/oauth/usage?cedar_ember=1` から、5時間 / 週間 / モデル別週間の消費率と期間限定のリセット枠（残っているときだけ `Resets` 行に表示）を取り、RunCat Neo のカスタムメトリクス形式の JSON に書き出します。RunCat 側はそのファイルをファイルシステムイベントで監視していて、書き換わった瞬間にカードを更新します（ポーリングもネットワークアクセスもなし）。
 
 認証には Claude Code が既に保存している OAuth トークンをそのまま使います（macOS Keychain の `Claude Code-credentials`、なければ `~/.claude/.credentials.json`）。**使用量の上限はアカウント単位で共有されている**ので、この数字は Claude Desktop の Settings → Usage や claude.ai で見えるものと同じです。API キーも `.env` も要りません。
 
@@ -42,7 +43,7 @@ ninelives codex uninstall
 
 | | Claude | Codex |
 | --- | --- | --- |
-| データ元 | `GET api.anthropic.com/api/oauth/usage` | `GET chatgpt.com/backend-api/wham/usage` ＋ `GET …/wham/rate-limit-reset-credits` |
+| データ元 | `GET api.anthropic.com/api/oauth/usage?cedar_ember=1` | `GET chatgpt.com/backend-api/wham/usage` ＋ `GET …/wham/rate-limit-reset-credits` |
 | トークン | Keychain `Claude Code-credentials` / `~/.claude/.credentials.json` | `~/.codex/auth.json`（`$CODEX_HOME` 可変） |
 | metrics ファイル | `claude.json` | `codex.json` |
 | カード | 🩺 `Claude` / `staroflife` | ⚡ `Codex` / `bolt` |

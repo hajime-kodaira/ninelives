@@ -42,6 +42,12 @@ func buildCard(u usage, o options, now time.Time) card {
 	for _, r := range rows {
 		c.Metrics = append(c.Metrics, windowRow(r, o, now))
 	}
+	if resets := u.CedarEmber.summary(now); resets != "" {
+		c.Metrics = append(c.Metrics, metric{
+			Title:          "Resets",
+			FormattedValue: resets,
+		})
+	}
 	if o.credits && u.ExtraUsage != nil && u.ExtraUsage.IsEnabled {
 		// Money, not a percentage: no normalizedValue means no bar.
 		c.Metrics = append(c.Metrics, metric{
