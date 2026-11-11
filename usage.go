@@ -22,10 +22,7 @@ const (
 	usageURL      = "https://api.anthropic.com/api/oauth/usage?cedar_ember=1"
 	anthropicBeta = "oauth-2025-04-20"
 	anthropicVers = "2023-06-01"
-	// The usage endpoint gates cedar_ember on the Claude Code CLI User-Agent;
-	// anything else comes back with ineligible_reason: "surface" and no grants.
-	claudeUA    = "claude-cli/2.1.322 (external, cli)"
-	keychainSvc = "Claude Code-credentials"
+	keychainSvc   = "Claude Code-credentials"
 )
 
 // --- response shape ----------------------------------------------------
@@ -162,8 +159,31 @@ func (e extraUsage) spent() string {
 // cedarEmber is the temporary limit-reset grant block returned when the usage
 // endpoint is asked with ?cedar_ember=1 (Claude Code's /limit-reset).
 type cedarEmber struct {
-	Eligible bool         `json:"eligible"`
-	Grants   []resetGrant `json:"grants"`
+	Eligible         bool         `json:"eligible"`
+	IneligibleReason string       `json:"ineligible_reason"`
+	Grants           []resetGrant `json:"-"`
+}
+
+func (c *cedarEmber) UnmarshalJSON(b []byte) error {
+	var raw struct {
+		Eligible         bool              `json:"eligible"`
+		IneligibleReason string            `json:"ineligible_reason"`
+		Grants           []json.RawMessage `json:"grants"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	c.Eligible = raw.Eligible
+	c.IneligibleReason = raw.IneligibleReason
+	// Decode grants one by one so a single malformed entry does not drop the
+	// rest of the block, matching Claude Code's per-grant validation.
+	for _, item := range raw.Grants {
+		var g resetGrant
+		if err := json.Unmarshal(item, &g); err == nil {
+			c.Grants = append(c.Grants, g)
+		}
+	}
+	return nil
 }
 
 type resetGrant struct {
@@ -185,8 +205,10 @@ func (g resetGrant) kind() string {
 	switch g.Type {
 	case "session":
 		return "5h"
-	case "weekly", "full":
-		return g.Type
+	case "weekly":
+		return "7d"
+	case "full":
+		return "full"
 	case "":
 		var fiveHour, other bool
 		for _, c := range g.Clears {
@@ -200,7 +222,7 @@ func (g resetGrant) kind() string {
 		case fiveHour && !other:
 			return "5h"
 		case other && !fiveHour:
-			return "weekly"
+			return "7d"
 		default:
 			return "full"
 		}
@@ -209,7 +231,7 @@ func (g resetGrant) kind() string {
 	}
 }
 
-// summary formats the remaining reset grants as "1 full, 3 Fable · 29d4h",
+// summary formats the remaining reset grants as "1 full, 3 Fable · expires 29d7h",
 // using the earliest expiry among active grants. It returns "" when the
 // account is ineligible or no usable resets remain, so the card drops the row.
 func (c *cedarEmber) summary(now time.Time) string {
@@ -250,7 +272,17 @@ func (c *cedarEmber) summary(now time.Time) string {
 	for i, b := range buckets {
 		parts[i] = fmt.Sprintf("%d %s", b.count, b.kind)
 	}
-	return strings.Join(parts, ", ") + until(now, earliest)
+	return strings.Join(parts, ", ") + expiresIn(now, earliest)
+}
+
+func (c *cedarEmber) ineligibleNote() string {
+	if c == nil || c.Eligible {
+		return ""
+	}
+	if c.IneligibleReason != "" {
+		return c.IneligibleReason
+	}
+	return "ineligible"
 }
 
 // resetTime accepts either an RFC3339 string or a Unix timestamp, since the
@@ -341,7 +373,7 @@ func fetchUsage(token string, timeout time.Duration) ([]byte, http.Header, error
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", anthropicBeta)
 	req.Header.Set("anthropic-version", anthropicVers)
-	req.Header.Set("User-Agent", claudeUA)
+	req.Header.Set("User-Agent", "ninelives/"+versionString())
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := (&http.Client{Timeout: timeout}).Do(req)

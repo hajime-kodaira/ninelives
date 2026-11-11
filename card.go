@@ -148,13 +148,26 @@ func until(now, resets time.Time) string {
 	if d <= 0 {
 		return " · resetting"
 	}
+	return " · " + shortDuration(d)
+}
+
+// expiresIn renders " · expires 29d7h" for a grant deadline, so it cannot be
+// misread as the time until a rate-limit window refills.
+func expiresIn(now, ends time.Time) string {
+	if ends.IsZero() || !now.Before(ends) {
+		return ""
+	}
+	return " · expires " + shortDuration(ends.Sub(now))
+}
+
+func shortDuration(d time.Duration) string {
 	switch {
 	case d < time.Hour:
-		return fmt.Sprintf(" · %dm", int(d.Minutes()))
+		return fmt.Sprintf("%dm", int(d.Minutes()))
 	case d < 24*time.Hour:
-		return fmt.Sprintf(" · %dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+		return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
 	default:
-		return fmt.Sprintf(" · %dd%dh", int(d.Hours())/24, int(d.Hours())%24)
+		return fmt.Sprintf("%dd%dh", int(d.Hours())/24, int(d.Hours())%24)
 	}
 }
 

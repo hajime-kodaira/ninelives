@@ -405,7 +405,8 @@ func encodeCodexCard(o options) ([]byte, error) {
 
 // noteNewWindows announces an allowance the card does not know about, once,
 // the first time the API mentions it. A temporary capacity grant would arrive
-// this way, and going unnoticed is the failure worth avoiding.
+// this way, and going unnoticed is the failure worth avoiding. It also records
+// why cedar_ember was ineligible, announcing only when the reason changes.
 func noteNewWindows(o options, u usage) {
 	unknown := u.unknownWindows()
 	names := make([]string, 0, len(unknown))
@@ -416,6 +417,12 @@ func noteNewWindows(o options, u usage) {
 	if added := st.noteWindows(names); len(added) > 0 && !o.extra {
 		fmt.Fprintf(os.Stderr, "ninelives: the API reported an allowance this card does not show: %s (add -extra)\n",
 			strings.Join(added, ", "))
+	}
+	if note := u.CedarEmber.ineligibleNote(); note != st.ResetGrantsNote {
+		if note != "" {
+			fmt.Fprintf(os.Stderr, "ninelives: dropping the Resets row: cedar_ember ineligible (%s)\n", note)
+		}
+		st.ResetGrantsNote = note
 	}
 	saveState(o, st)
 }

@@ -272,8 +272,8 @@ func TestCedarEmberResetsRow(t *testing.T) {
 		t.Fatalf("got %d rows, want 3: %+v", len(c.Metrics), c.Metrics)
 	}
 	resets := c.Metrics[2]
-	if resets.Title != "Resets" || resets.FormattedValue != "1 full, 3 Fable · 29d7h" {
-		t.Errorf("Resets row = %q/%q, want Resets/\"1 full, 3 Fable · 29d7h\"", resets.Title, resets.FormattedValue)
+	if resets.Title != "Resets" || resets.FormattedValue != "1 full, 3 Fable · expires 29d7h" {
+		t.Errorf("Resets row = %q/%q, want Resets/\"1 full, 3 Fable · expires 29d7h\"", resets.Title, resets.FormattedValue)
 	}
 	if resets.NormalizedValue != nil {
 		t.Error("Resets is a count, so the row must not draw a bar")
@@ -296,14 +296,31 @@ func TestCedarEmberFilteringAndFallbackKinds(t *testing.T) {
 			{Type: "", Clears: []string{"seven_day"}, ResetsLeft: 2, EndsAt: resetTime{now.Add(10 * time.Hour)}},
 		},
 	}
-	if got, want := ce.summary(now), "1 5h, 2 weekly · 10h00m"; got != want {
+	if got, want := ce.summary(now), "1 5h, 2 7d · expires 10h00m"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
 
-	// Once all grants are spent or ineligible, the row disappears.
+	// Once the account is ineligible, the row disappears and the reason is kept
+	// for the one-time log notice.
 	ce.Eligible = false
+	ce.IneligibleReason = "surface"
 	if got := ce.summary(now); got != "" {
 		t.Errorf("ineligible summary = %q, want empty", got)
+	}
+	if got := ce.ineligibleNote(); got != "surface" {
+		t.Errorf("ineligibleNote = %q, want surface", got)
+	}
+}
+
+// One malformed grant in the array must not cost the remaining grants.
+func TestBrokenGrantDoesNotDropSiblingGrants(t *testing.T) {
+	var ce cedarEmber
+	body := `{"eligible":true,"grants":[{"resets_left":"bad"},{"type":"weekly","resets_left":1}]}`
+	if err := json.Unmarshal([]byte(body), &ce); err != nil {
+		t.Fatalf("a single broken grant failed cedar_ember decode: %v", err)
+	}
+	if got, want := ce.summary(time.Now()), "1 7d"; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
 	}
 }
 

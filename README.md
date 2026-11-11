@@ -9,7 +9,7 @@ Claude と OpenAI Codex CLI の**残り使用率**を [RunCat Neo](https://kyome
 │ 5h        57% left · 1h36m  ████████░░░░░ │
 │ 7d        93% left · 3d18h  ████████████░ │
 │ 7d Fable  89% left · 3d18h  ████████████░ │
-│ Resets    1 full, 3 Fable · 29d6h         │
+│ Resets  1 full, 3 Fable · expires 29d6h   │
 └───────────────────────────────────────────┘
 
 ⚡ 97%      ← メニューバー（Codex）

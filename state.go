@@ -29,6 +29,10 @@ type state struct {
 	// permanent one (a plan without reset credits answers the same 404
 	// forever) is announced once instead of once per run.
 	ResetCreditsNote string `json:"resetCreditsNote,omitempty"`
+	// ResetGrantsNote records why cedar_ember reported eligible: false (e.g.
+	// "surface", "tier", "cli_version"), so a change in eligibility is
+	// announced once on stderr instead of every 120s or not at all.
+	ResetGrantsNote string `json:"resetGrantsNote,omitempty"`
 }
 
 func (s *state) clearBackoff() {

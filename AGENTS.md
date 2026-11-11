@@ -20,11 +20,11 @@ ninelives は Claude と Codex の残り使用率を RunCat Neo のカードに�
 - **メニューバーの値はプラン本体の窓だけ**（`-bar 5h` / `7d`）。`-extra` の未知の枠や `Review` 行がバーを乗っ取らない。`-bar min` は `rows()` の全行を見る（Claude の `7d Fable` と Codex の `Review` 行は同じ扱い）。
 - **認証情報は読むだけ。トークンをログにも標準出力にも出さない。** リフレッシュは実装しない。401 は「`claude` / `codex` を一度起動」の案内にする。
 - **プロバイダは完全分離。** `codex` プレフィックスで out / state / launchd ラベル / ログが別。state のキーは provider であって `-out` のファイル名ではない。プロバイダを足すときも同じ形にする。
-- **エージェントは 120 秒ごとに走る。恒常的な状態は一度だけ告知する**（state の `Seen`、`ResetCreditsNote`）。毎回出るログは設計ミス。
+- **エージェントは 120 秒ごとに走る。恒常的な状態は一度だけ告知する**（state の `Seen`、`ResetCreditsNote`、`ResetGrantsNote`）。毎回出るログは設計ミス。
 
 ## 実測値（変わったら日付付きで更新）
 
-- Claude usage: 5 分あたり 5 リクエスト。6 本目で 429 と `Retry-After: 300`。成功応答にレート制限ヘッダは付かない。既定 120 秒は Claude Code 自身の `/usage` と枠を分け合うため。`?cedar_ember=1` で `/limit-reset` の付与枠も同じ 1 リクエストで返るが、`User-Agent` が `claude-cli/<version>` でないと `ineligible_reason: "surface"` になり `grants` が空になる（2026-11 時点）。
+- Claude usage: 5 分あたり 5 リクエスト。6 本目で 429 と `Retry-After: 300`。成功応答にレート制限ヘッダは付かない。既定 120 秒は Claude Code 自身の `/usage` と枠を分け合うため。`?cedar_ember=1` で `/limit-reset` の付与枠も同じ 1 リクエストで返るが、`User-Agent` が `claude-cli/<version>` でないと `ineligible_reason: "surface"` になり `grants` が空になる（2026-11 時点、UA 偽装はせず `ninelives/<version>` のまま送る）。
 - Codex: `wham/usage` と `wham/rate-limit-reset-credits` の 2 GET/回。レート制限は未計測。Resets は専用エンドポイントの `available_count` を使う。`wham/usage` 側の値は Codex アプリの表示と食い違った（2026-09 時点で 3 対 1）。
 - Go 1.22 のツールチェーンは LC_UUID 無しの Mach-O を作り、現行の macOS が起動を拒む。CI とリリースは `stable` を使い、go.mod の 1.22 は言語バージョンの下限として残す。
 
